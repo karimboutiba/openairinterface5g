@@ -81,6 +81,7 @@
 #include "alg/find.h"
 #include "NR_HandoverCommand.h"
 #include "openair2/SDAP/nr_sdap/nr_sdap_configuration.h"
+#include "rrc_gNB_measurements.h"
 
 #ifdef E2_AGENT
 #include "openair2/E2AP/RAN_FUNCTION/O-RAN/ran_func_rc_extern.h"
@@ -653,10 +654,10 @@ static nr_a3_event_t *get_a3_configuration(gNB_RRC_INST *rrc, int pci)
   return NULL;
 }
 
-static NR_ReportConfigToAddMod_t *prepare_periodic_event_report(const nr_per_event_t *per_event)
+static NR_ReportConfigToAddMod_t *prepare_periodic_event_report(gNB_RRC_UE_t *ue, const nr_per_event_t *per_event)
 {
   NR_ReportConfigToAddMod_t *rc = calloc(1, sizeof(*rc));
-  rc->reportConfigId = 1;
+  rc->reportConfigId = allocate_report_config_id(ue);
   rc->reportConfig.present = NR_ReportConfigToAddMod__reportConfig_PR_reportConfigNR;
 
   NR_PeriodicalReportConfig_t *prc = calloc(1, sizeof(*prc));
@@ -682,10 +683,10 @@ static NR_ReportConfigToAddMod_t *prepare_periodic_event_report(const nr_per_eve
   return rc;
 }
 
-static NR_ReportConfigToAddMod_t *prepare_a2_event_report(const nr_a2_event_t *a2_event)
+static NR_ReportConfigToAddMod_t *prepare_a2_event_report(gNB_RRC_UE_t *ue, const nr_a2_event_t *a2_event)
 {
   NR_ReportConfigToAddMod_t *rc_A2 = calloc(1, sizeof(*rc_A2));
-  rc_A2->reportConfigId = 2;
+  rc_A2->reportConfigId = allocate_report_config_id(ue);
   rc_A2->reportConfig.present = NR_ReportConfigToAddMod__reportConfig_PR_reportConfigNR;
   NR_EventTriggerConfig_t *etrc_A2 = calloc(1, sizeof(*etrc_A2));
   etrc_A2->eventId.present = NR_EventTriggerConfig__eventId_PR_eventA2;
@@ -753,7 +754,7 @@ void free_RRCReconfiguration_params(nr_rrc_reconfig_param_t params)
     FREE_AND_ZERO_BYTE_ARRAY(params.dedicated_NAS_msg_list[i]);
 }
 
-NR_MeasConfig_t *nr_rrc_get_measconfig(const gNB_RRC_INST *rrc, uint64_t nr_cellid)
+NR_MeasConfig_t *nr_rrc_get_measconfig(const gNB_RRC_INST *rrc, uint64_t nr_cellid, gNB_RRC_UE_t *ue)
 {
   nr_rrc_cell_container_t *cell = get_cell_by_cell_id(&((gNB_RRC_INST *)rrc)->cells, nr_cellid);
   DevAssert(cell != NULL);
@@ -795,7 +796,7 @@ NR_MeasConfig_t *nr_rrc_get_measconfig(const gNB_RRC_INST *rrc, uint64_t nr_cell
           /* no A3 event configured for this neighbour, let's try the default one, if it exists */
           if (default_a3_added) {
             /* default A3 exists and is already added, use it for this neighbour */
-            neigh_a3_id[i] = 3;
+            neigh_a3_id[i] = default_a3_report_config_id;
             continue;
           }
           /* try to get the default A3 config */
@@ -805,23 +806,31 @@ NR_MeasConfig_t *nr_rrc_get_measconfig(const gNB_RRC_INST *rrc, uint64_t nr_cell
             neigh_a3_id[i] = -1;
             continue;
           }
+          /* allocated default A3 report config ID */
+          default_a3_report_config_id = allocate_report_config_id(ue);
+          neigh_a3_id[i] = default_a3_report_config_id;
           default_a3_added = true;
-          /* default A3 report config ID is 3 */
-          neigh_a3_id[i] = 3;
         } else {
-          /* specific A3 report config ID are 4, 5, ... */
-          neigh_a3_id[i] = i + 4;
+          /* allocate specific A3 report config ID */
+          neigh_a3_id[i] = allocate_report_config_id(ue);
         }
         NR_ReportConfigId_t reportConfigId = neigh_a3_id[i];
         seq_arr_push_back(&rc_A3_seq, prepare_a3_event_report(a3Event, reportConfigId), sizeof(NR_ReportConfigToAddMod_t));
       }
     }
+<<<<<<< HEAD
     if (rrc->measurementConfiguration.per_event)
       rc_PER = prepare_periodic_event_report(rrc->measurementConfiguration.per_event);
     if (rrc->measurementConfiguration.a2_event)
       rc_A2 = prepare_a2_event_report(rrc->measurementConfiguration.a2_event);
+=======
+    if (meas_cfg->per_event)
+      rc_PER = prepare_periodic_event_report(ue, meas_cfg->per_event);
+    if (meas_cfg->a2_event)
+      rc_A2 = prepare_a2_event_report(ue, meas_cfg->a2_event);
+>>>>>>> 2fbc1d9035 (add a module to properly allocate measurement IDs)
 
-    NR_MeasConfig_t *result = get_MeasConfig(mt, band, cell->info.pci, rc_PER, rc_A2, &rc_A3_seq, &neigh_seq, neigh_a3_id);
+    NR_MeasConfig_t *result = get_MeasConfig(ue, mt, band, cell->info.pci, rc_PER, rc_A2, &rc_A3_seq, &neigh_seq, neigh_a3_id);
 
     // Clean up sequence arrays
     seq_arr_free(&rc_A3_seq, NULL);
@@ -1407,7 +1416,7 @@ static void rrc_handle_RRCSetupRequest(gNB_RRC_INST *rrc,
     return;
   }
   UE->ongoing_reconfiguration = false;
-  UE->measConfig = nr_rrc_get_measconfig(rrc, msg->nr_cellid);
+  UE->measConfig = nr_rrc_get_measconfig(rrc, msg->nr_cellid, UE);
   activate_srb(UE, 1);
   rrc_gNB_generate_RRCSetup(0, ue_context_p, msg->du2cu_rrc_container, msg->du2cu_rrc_container_length);
 }
@@ -5018,7 +5027,7 @@ void rrc_f1_ue_context_setup_for_target_du(const gNB_RRC_INST *rrc,
 
   /* Update measurement config for target DU */
   free_MeasConfig(ue->measConfig);
-  ue->measConfig = nr_rrc_get_measconfig(rrc, cell->info.cell_id);
+  ue->measConfig = nr_rrc_get_measconfig(rrc, cell->info.cell_id, ue);
   byte_array_t *meas_config = calloc_or_fail(1, sizeof(*meas_config));
   meas_config->buf = calloc_or_fail(1, NR_RRC_BUF_SIZE);
   meas_config->len = do_NR_MeasConfig(ue->measConfig, meas_config->buf, NR_RRC_BUF_SIZE);
