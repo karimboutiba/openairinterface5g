@@ -819,17 +819,10 @@ NR_MeasConfig_t *nr_rrc_get_measconfig(const gNB_RRC_INST *rrc, uint64_t nr_cell
         seq_arr_push_back(&rc_A3_seq, prepare_a3_event_report(a3Event, reportConfigId), sizeof(NR_ReportConfigToAddMod_t));
       }
     }
-<<<<<<< HEAD
     if (rrc->measurementConfiguration.per_event)
       rc_PER = prepare_periodic_event_report(rrc->measurementConfiguration.per_event);
     if (rrc->measurementConfiguration.a2_event)
       rc_A2 = prepare_a2_event_report(rrc->measurementConfiguration.a2_event);
-=======
-    if (meas_cfg->per_event)
-      rc_PER = prepare_periodic_event_report(ue, meas_cfg->per_event);
-    if (meas_cfg->a2_event)
-      rc_A2 = prepare_a2_event_report(ue, meas_cfg->a2_event);
->>>>>>> 2fbc1d9035 (add a module to properly allocate measurement IDs)
 
     NR_MeasConfig_t *result = get_MeasConfig(ue, mt, band, cell->info.pci, rc_PER, rc_A2, &rc_A3_seq, &neigh_seq, neigh_a3_id);
 
@@ -4190,8 +4183,15 @@ unsigned int mask_flip(unsigned int x) {
   return((((x>>8) + (x<<8))&0xffff)>>6);
 }
 
+<<<<<<< HEAD
 /* \bref return F1AP QoS characteristics based on Qos flow parameters */
 f1ap_qos_flow_param_t get_qos_char_from_qos_flow_param(const pdusession_level_qos_parameter_t *qos_param)
+=======
+/** @brief Get F1AP QoS flow parameters from PDU session QoS parameters
+ * @param qos_param PDU session level QoS parameters from NGAP
+ * @return F1AP QoS flow parameters */
+f1ap_qos_flow_param_t nr_rrc_get_f1_qos_flow_param(const pdusession_level_qos_parameter_t *qos_param)
+>>>>>>> c0848905c8 (NR-DC: CU sends F1 UE Context Setup Request)
 {
   f1ap_qos_flow_param_t qos_char = {0};
   if (qos_param->fiveQI_type == DYNAMIC) {
