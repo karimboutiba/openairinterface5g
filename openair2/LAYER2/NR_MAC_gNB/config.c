@@ -447,7 +447,7 @@ int get_first_ul_slot_beam(const frame_structure_t *fs, int beam_idx, int beams_
   for (int i = 0; i < fs->numb_slots_frame; i++) {
       ul_slot_idxs[i] = 0;
   }
-  int idx = beam_idx / beams_per_period;
+  int idx = get_beamloc_from_beam(beam_idx) / beams_per_period;
   LOG_D(NR_MAC, "get_first_ul_slot_beam 0 idx %d beam_idx %d num_beam %d\n", idx, beam_idx, num_beam);
 
   /* Populate the indices of UL slots in the TDD period from the bitmap
