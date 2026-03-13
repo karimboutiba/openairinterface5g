@@ -633,10 +633,13 @@ int xran_fh_tx_send_slot(ru_info_t *ru, int frame, int slot, uint64_t timestamp)
           int16_t payload_len = 0;
 
           uint8_t *dst = (uint8_t *)u8dptr;
-
           for (uint32_t idxElm = 0; idxElm < pPrbMap->nPrbElm; idxElm++) {
             struct xran_section_desc *p_sec_desc = NULL;
             struct xran_prb_elm *p_prbMapElm = &pPrbMap->prbMap[idxElm];
+            // ant_id / no of antenna per beam gives the beam_nb
+            int16_t beam_id = ru->beam_id[ant_id / (ru->nb_tx / ru->num_beams_period)][slot * XRAN_NUM_OF_SYMBOL_PER_SLOT + sym_idx];
+            if ( beam_id != -1)
+              p_prbMapElm->nBeamIndex = beam_id;
 
             // radio-transport fragmentation is not supported in xran F release;
             // E-bit = 1 => each ethernet frame is considered as the last fragment;
