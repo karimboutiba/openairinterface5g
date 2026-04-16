@@ -4173,7 +4173,6 @@ void update_cellGroupConfig(NR_CellGroupConfig_t *cellGroupConfig,
 int encode_cellGroupConfig(NR_CellGroupConfig_t *cellGroupConfig, uint8_t *buffer, int max_buffer_size)
 {
   asn_enc_rval_t enc_rval = uper_encode_to_buffer(&asn_DEF_NR_CellGroupConfig, NULL, cellGroupConfig, buffer, max_buffer_size);
-  xer_fprint(stdout, &asn_DEF_NR_CellGroupConfig, cellGroupConfig);
   AssertFatal(enc_rval.encoded > 0 && enc_rval.encoded <= max_buffer_size * 8,
               "ASN1 message encoding failed (%s, %lu)!\n",
               enc_rval.failed_type->name,
