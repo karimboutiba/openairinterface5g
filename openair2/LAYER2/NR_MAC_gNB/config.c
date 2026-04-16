@@ -467,7 +467,7 @@ int get_first_ul_slot_beam(const frame_structure_t *fs, int beam_idx, int beams_
   // Compute slot index offset
   int period_idx = idx / MAX_SR_SLOT_PERIOD; // wrap up the count of complete TDD periods spanned by the index
   int ul_slot_idx_in_period = idx % MAX_SR_SLOT_PERIOD; // wrap up the UL slot index within the current TDD period
-  int ret = 4; //ul_slot_idxs[ul_slot_idx_in_period] + period_idx * fs->numb_slots_frame;
+  int ret = ul_slot_idxs[ul_slot_idx_in_period] + period_idx * fs->numb_slots_frame;
   LOG_D(NR_MAC, "get_first_ul_slot_beam ret %d idx %d beam_idx %d ul_slot_count %d %d %d\n",
     ret, idx, beam_idx, ul_slot_idx_in_period, period_idx, fs->numb_slots_period);
   return ret;
