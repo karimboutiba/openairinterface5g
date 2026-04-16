@@ -135,7 +135,7 @@ size_t dump_mac_stats(gNB_MAC_INST *gNB, char *output, size_t strlen, bool reset
                        sched_ctrl->pcmax);
 
     if (stats->num_rsrp_meas)
-      output = st_append(output, end, ", average RSRP %d (%d meas)", avg_rsrp, stats->num_rsrp_meas);
+      output = st_append(output, end, ", average RSRP %d (%d meas), beam index %d", avg_rsrp, stats->num_rsrp_meas, UE->UE_beam_index);
 
     if (stats->num_sinr_meas) {
       output = st_append(output,
