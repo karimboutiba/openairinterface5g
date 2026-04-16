@@ -536,14 +536,17 @@ static void evaluate_rsrp_report(NR_UE_info_t *UE,
   nr_csi_report_t *csi_report = &UE->csi_report_template[csi_report_id];
   RSRP_report_list_t *rsrp_report;
   long **index_list;
+  int nb_resources = 0;
   switch (reportQuantity_type) {
     case NR_CSI_ReportConfig__reportQuantity_PR_ssb_Index_RSRP:
       rsrp_report = &sched_ctrl->CSI_report.ssb_rsrp_report;
       index_list = csi_report->SSB_Index_list;
+      nb_resources = csi_report->nb_resources;
       break;
     case NR_CSI_ReportConfig__reportQuantity_PR_cri_RSRP :
       rsrp_report = &sched_ctrl->CSI_report.csirs_rsrp_report;
       index_list = csi_report->CSI_Index_list;
+      nb_resources = csi_report->nb_resources;
       break;
     default :
       AssertFatal(false, "Invalid RSRP report type\n");
@@ -553,6 +556,12 @@ static void evaluate_rsrp_report(NR_UE_info_t *UE,
   int bitlen = csi_report->CSI_report_bitlen.cri_ssbri_bitlen;
   for (RSRP_report_t *i = rsrp_report->r; i < rsrp_report->r + rsrp_report->nb; i++) {
     uint8_t idx_payload = pickandreverse_bits(payload, bitlen, *cumul_bits);
+    uint8_t idx = (bitlen > 0 ? (idx_payload & ~(~1U << (bitlen - 1))) : bitlen) < nb_resources ? (bitlen > 0 ? (idx_payload & ~(~1U << (bitlen - 1))) : bitlen) : 255;
+    if (idx == 255) {
+      LOG_E(NR_MAC, "UE %04x: reported index %d for SSB/CSI-RS resource is out of range for index_list %d\n", UE->rnti, idx_payload, bitlen);
+      return;
+    }
+    LOG_D(NR_MAC, "idx_payload %d bitlen %d index %d\n", idx_payload, bitlen, bitlen > 0 ? (idx_payload & ~(~1U << (bitlen - 1))) : bitlen);
     i->resource_id = *(index_list[bitlen > 0 ? (idx_payload & ~(~1U << (bitlen - 1))) : bitlen]);
     *cumul_bits += bitlen;
   }

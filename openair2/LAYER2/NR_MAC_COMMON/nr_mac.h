@@ -471,6 +471,7 @@ typedef struct nr_csi_report {
   uint16_t offset;
   long **SSB_Index_list;
   long **CSI_Index_list;
+  int nb_resources;
 //  uint8_t nb_of_nzp_csi_report;
   uint8_t nb_of_csi_ssb_report;
   L1_Meas_bitlen_t CSI_report_bitlen;
