@@ -524,12 +524,6 @@ void fix_scc(NR_ServingCellConfigCommon_t *scc, uint64_t ssbmap)
   }
   DevAssert(rach_ConfigCommon->rach_ConfigGeneric.ra_ResponseWindow >= 0);
 
-  // prepare DL Allocation lists
-  nr_rrc_config_dl_tda(dlcc->initialDownlinkBWP->pdsch_ConfigCommon->choice.setup->pdsch_TimeDomainAllocationList,
-                       frame_type,
-                       scc,
-                       NRRIV2BW(dlcc->initialDownlinkBWP->genericParameters.locationAndBandwidth, MAX_BWP_SIZE));
-
   if (frame_type == FDD) {
     ASN_STRUCT_FREE(asn_DEF_NR_TDD_UL_DL_ConfigCommon, scc->tdd_UL_DL_ConfigurationCommon);
     scc->tdd_UL_DL_ConfigurationCommon = NULL;
