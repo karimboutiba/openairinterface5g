@@ -3427,6 +3427,7 @@ static void handle_rrcReconfigurationComplete(gNB_RRC_INST *rrc, gNB_RRC_UE_t *U
       break;
     case RRC_F1_NRDC_IN_PROGRESS:
       rrc_gnb_nrdc_rrc_reconfiguration_complete_received(rrc, UE, xid);
+      reset_delayed_action(&UE->delayed_action);
       break;
     default:
       LOG_E(RRC, "UE %d: Received unexpected transaction type %d for xid %d\n", UE->rrc_ue_id, UE->xids[xid], xid);
@@ -4063,6 +4064,9 @@ static void rrc_CU_process_ue_context_modification_response(MessageDef *msg_p, i
   }
   gNB_RRC_UE_t *UE = &ue_context_p->ue_context;
 
+  if (UE->nrdc && rrc_gnb_nrdc_wait_for_f1_context_modification_response(UE))
+    return nrdc_rrc_CU_process_ue_context_modification_response(UE, rrc, resp);
+
   bool is_inter_cu_ho = UE->ho_context && UE->ho_context->source && !UE->ho_context->target;
   if (resp->drbs_len > 0) { // DRB to setup
     store_du_f1u_tunnel(resp->drbs, resp->drbs_len, UE);
@@ -4190,15 +4194,10 @@ unsigned int mask_flip(unsigned int x) {
   return((((x>>8) + (x<<8))&0xffff)>>6);
 }
 
-<<<<<<< HEAD
-/* \bref return F1AP QoS characteristics based on Qos flow parameters */
-f1ap_qos_flow_param_t get_qos_char_from_qos_flow_param(const pdusession_level_qos_parameter_t *qos_param)
-=======
 /** @brief Get F1AP QoS flow parameters from PDU session QoS parameters
  * @param qos_param PDU session level QoS parameters from NGAP
  * @return F1AP QoS flow parameters */
 f1ap_qos_flow_param_t nr_rrc_get_f1_qos_flow_param(const pdusession_level_qos_parameter_t *qos_param)
->>>>>>> c0848905c8 (NR-DC: CU sends F1 UE Context Setup Request)
 {
   f1ap_qos_flow_param_t qos_char = {0};
   if (qos_param->fiveQI_type == DYNAMIC) {
@@ -4334,6 +4333,89 @@ static int fill_drb_to_be_setup_from_e1_resp(const gNB_RRC_INST *rrc,
   }
   DevAssert(nb_drb < MAX_DRBS_PER_UE);
   return nb_drb;
+}
+
+/** @brief Common helper to send F1 UE Context Modification Request with DRBs to setup
+ * This function handles the common logic for both setup and modify flows */
+static void rrc_send_f1_ue_context_modification_request(const gNB_RRC_INST *rrc,
+                                                        gNB_RRC_UE_t *ue_p,
+                                                        int n_drbs,
+                                                        f1ap_drb_to_setup_t *drbs,
+                                                        int n_rel_drbs,
+                                                        f1ap_drb_to_release_t *rel_drbs)
+{
+  DevAssert(rrc);
+  DevAssert(ue_p);
+  DevAssert(n_drbs > 0 || n_rel_drbs > 0);
+  AssertFatal(ue_p->f1_ue_context_active, "logic error: calling ue context modification when context not established\n");
+  AssertFatal(ue_p->Srb[1].Active && ue_p->Srb[2].Active, "SRBs should already be active\n");
+  AssertFatal(!NODE_IS_DU(rrc->node_type), "illegal node type DU!\n");
+
+  f1_ue_data_t ue_data = cu_get_f1_ue_data(ue_p->rrc_ue_id);
+  RETURN_IF_INVALID_ASSOC_ID(ue_data.du_assoc_id);
+
+  /* check if one of the bearers to remove is the NR-DC one, remove it if yes */
+  if (n_rel_drbs) {
+    int nrdc_bearer_index;
+    for (nrdc_bearer_index = 0; nrdc_bearer_index < n_rel_drbs; nrdc_bearer_index++) {
+      if (is_nrdc_bearer(ue_p, rel_drbs[nrdc_bearer_index].id)) {
+        nrdc_release_bearer(rrc, ue_p, rel_drbs[nrdc_bearer_index].id);
+        break;
+      }
+    }
+
+    if (nrdc_bearer_index != n_rel_drbs) {
+      /* nrdc bearer was removed, do not remove it again */
+      n_rel_drbs--;
+      /* do nothing else if no add/rel to do */
+      if (!n_rel_drbs && !n_drbs)
+        return;
+      memcpy(&rel_drbs[nrdc_bearer_index], &rel_drbs[nrdc_bearer_index + 1],
+             sizeof(int) * n_rel_drbs - nrdc_bearer_index);
+    }
+  }
+
+  f1ap_ue_context_mod_req_t req = {
+      .gNB_CU_ue_id = ue_p->rrc_ue_id,
+      .gNB_DU_ue_id = ue_data.secondary_ue,
+      .servCellIndex = RRC_PCELL_INDEX,
+  };
+
+  if (n_drbs > 0) {
+    req.drbs = calloc_or_fail(n_drbs, sizeof(*req.drbs));
+    memcpy(req.drbs, drbs, n_drbs * sizeof(*req.drbs));
+    req.drbs_len = n_drbs;
+    if (ue_p->ue_cap_buffer.len > 0) {
+      req.cu_to_du_rrc_info = calloc_or_fail(1, sizeof(*req.cu_to_du_rrc_info));
+      req.cu_to_du_rrc_info->ue_cap = calloc_or_fail(1, sizeof(*req.cu_to_du_rrc_info->ue_cap));
+      *req.cu_to_du_rrc_info->ue_cap = copy_byte_array(ue_p->ue_cap_buffer);
+    }
+  }
+
+  if (n_rel_drbs > 0) {
+    req.drbs_rel = calloc_or_fail(n_rel_drbs, sizeof(*req.drbs_rel));
+    memcpy(req.drbs_rel, rel_drbs, n_rel_drbs * sizeof(*req.drbs_rel));
+    req.drbs_rel_len = n_rel_drbs;
+  }
+
+  req.plmn = malloc_or_fail(sizeof(*req.plmn));
+  *req.plmn = rrc->configuration.plmn[0];
+  nr_rrc_cell_container_t *cell = rrc_get_pcell_for_ue((gNB_RRC_INST *)rrc, ue_p);
+  DevAssert(cell != NULL);
+  req.nr_cellid = malloc_or_fail(sizeof(*req.nr_cellid));
+  *req.nr_cellid = cell->info.cell_id;
+
+  // Request CellGroupConfig from DU in the response
+  req.gNB_DU_Configuration_Query = calloc_or_fail(1, sizeof(*req.gNB_DU_Configuration_Query));
+  *req.gNB_DU_Configuration_Query = true;
+
+  rrc->mac_rrc.ue_context_modification_request(ue_data.du_assoc_id, &req);
+  free_ue_context_mod_req(&req);
+  LOG_I(NR_RRC,
+        "UE %d trigger UE Context Modification Request (DRBs to setup: %d, DRBs to release: %d)\n",
+        ue_p->rrc_ue_id,
+        n_drbs,
+        n_rel_drbs);
 }
 
 /**
