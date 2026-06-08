@@ -789,6 +789,7 @@ NR_MeasConfig_t *nr_rrc_get_measconfig(const gNB_RRC_INST *rrc, uint64_t nr_cell
       */
       LOG_D(NR_RRC, "Preparing A3 Event Measurement Configuration!\n");
       bool default_a3_added = false; // To ensure that the default configuration is only added once
+      int default_a3_report_config_id = -1;
       for (int i = 0; i < neighbour_cells->size; i++) {
         nr_neighbour_cell_t *neighbourCell = (nr_neighbour_cell_t *)seq_arr_at(neighbour_cells, i);
         seq_arr_push_back(&neigh_seq, neighbourCell, sizeof(nr_neighbour_cell_t));
@@ -820,9 +821,9 @@ NR_MeasConfig_t *nr_rrc_get_measconfig(const gNB_RRC_INST *rrc, uint64_t nr_cell
       }
     }
     if (rrc->measurementConfiguration.per_event)
-      rc_PER = prepare_periodic_event_report(rrc->measurementConfiguration.per_event);
+      rc_PER = prepare_periodic_event_report(ue, rrc->measurementConfiguration.per_event);
     if (rrc->measurementConfiguration.a2_event)
-      rc_A2 = prepare_a2_event_report(rrc->measurementConfiguration.a2_event);
+      rc_A2 = prepare_a2_event_report(ue, rrc->measurementConfiguration.a2_event);
 
     NR_MeasConfig_t *result = get_MeasConfig(ue, mt, band, cell->info.pci, rc_PER, rc_A2, &rc_A3_seq, &neigh_seq, neigh_a3_id);
 
@@ -4235,7 +4236,7 @@ unsigned int mask_flip(unsigned int x) {
 /** @brief Get F1AP QoS flow parameters from PDU session QoS parameters
  * @param qos_param PDU session level QoS parameters from NGAP
  * @return F1AP QoS flow parameters */
-f1ap_qos_flow_param_t nr_rrc_get_f1_qos_flow_param(const pdusession_level_qos_parameter_t *qos_param)
+f1ap_qos_flow_param_t get_qos_char_from_qos_flow_param(const pdusession_level_qos_parameter_t *qos_param)
 {
   f1ap_qos_flow_param_t qos_char = {0};
   if (qos_param->fiveQI_type == DYNAMIC) {

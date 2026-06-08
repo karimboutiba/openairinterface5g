@@ -36,7 +36,7 @@ static NR_UE_info_t *nrdc_create_new_UE(gNB_MAC_INST *mac, uint32_t cu_id, const
   /* mimic NSA way to create a new UE (with adaptations) */
   NR_UE_NR_Capability_t *cap = get_ue_nr_cap_from_cg_config_info(cgci);
   int ssb_index = get_ssbidx_from_beam(mac, UE->UE_beam_index);
-  NR_CellGroupConfig_t *cellGroupConfig = get_default_secondaryCellGroup(scc, cap, 1, 1, configuration, UE->uid, ssb_index);
+  NR_CellGroupConfig_t *cellGroupConfig = get_default_secondaryCellGroup(scc, cap, 1, 1, configuration, UE->uid, ssb_index, UE->UE_beam_index);
 
   cellGroupConfig->spCellConfig->reconfigurationWithSync = get_reconfiguration_with_sync(UE->rnti, UE->uid, scc, mac->frame);
   UE->capability = cap;

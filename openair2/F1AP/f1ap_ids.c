@@ -8,7 +8,7 @@
 #include "f1ap_ids.h"
 
 #include <pthread.h>
-#include "ds/hashtable.h"
+#include "common/utils/ds/hashtable.h"
 #include "common/utils/assertions.h"
 
 

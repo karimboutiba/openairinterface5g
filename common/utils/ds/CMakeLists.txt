@@ -5,6 +5,7 @@ add_library(ds OBJECT
             byte_array_producer.c
             seq_arr.c
             shared_pointer.c
+            hashtable.c
 )
 
 target_include_directories(ds PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

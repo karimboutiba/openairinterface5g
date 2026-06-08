@@ -718,7 +718,7 @@ void rrc_gnb_nrdc_measurement_received(gNB_RRC_INST *rrc, gNB_RRC_UE_t *ue, NR_M
   nr_rrc_qos_t *qos_param = (nr_rrc_qos_t *)seq_arr_at(&pdu->param.qos, 0);
   DevAssert(qos_param->qos.qfi > 0);
   drb->nr.flows[0].qfi = qos_param->qos.qfi;
-  drb->nr.flows[0].param = nr_rrc_get_f1_qos_flow_param(&qos_param->qos);
+  drb->nr.flows[0].param = get_qos_char_from_qos_flow_param(&qos_param->qos);
   /* the DRB QoS parameters: we just reuse the ones from the first flow */
   drb->nr.drb_qos = drb->nr.flows[0].param;
 
@@ -1335,7 +1335,7 @@ void nrdc_handle_scg_failure_information(gNB_RRC_INST *rrc, gNB_RRC_UE_t *ue, NR
   nr_rrc_qos_t *qos_param = (nr_rrc_qos_t *)seq_arr_at(&pdu->param.qos, 0);
   DevAssert(qos_param->qos.qfi > 0);
   drb->nr.flows[0].qfi = qos_param->qos.qfi;
-  drb->nr.flows[0].param = nr_rrc_get_f1_qos_flow_param(&qos_param->qos);
+  drb->nr.flows[0].param = get_qos_char_from_qos_flow_param(&qos_param->qos);
   /* the DRB QoS parameters: we just reuse the ones from the first flow */
   drb->nr.drb_qos = drb->nr.flows[0].param;
 
