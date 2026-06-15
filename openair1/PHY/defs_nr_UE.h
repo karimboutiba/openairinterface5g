@@ -267,6 +267,7 @@ typedef struct {
   int if_freq_offset;
   int nb_cells;
   nrUE_cell_params_t *cell;
+  int nb_clients;
 } nrUE_RU_params_t;
 
 /// Top-level PHY Data Structure for UE
