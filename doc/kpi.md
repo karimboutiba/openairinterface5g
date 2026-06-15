@@ -15,9 +15,7 @@ The following results apply to the TDD configuration below:
 |DL test TDD Pattern|`DDDSU`, 2.5ms, 10D2G2U |
 |UL test TDD Pattern|`DDSUU`, 2.5ms, 6D4G4U  |
 
-#### KPI
-
-Configuration: `DDDSU`, mixed slot `6D4U`
+#### KPI with USRP
 
 |Bandwidth MHz/PRB|Layers|DL Throughput (Mbps)|UL Throughput (Mbps)|
 |-----------------|------|--------------------|--------------------|
@@ -39,20 +37,18 @@ Configuration: `DDDSU`, mixed slot `6D4U`
 
 
 #### KPI with ORAN 7.2
-- 9b BFP, 4T4R, Benetel550 RU
-- Quectel RM520N, OTA, distance: 2m
+
+9b BFP, 4T4R, Benetel550 RU, Quectel RM520N, OTA, distance: 2m
 
 |Bandwidth MHz/PRB|Layers|DL Throughput (Mbps)|UL Throughput (Mbps)|
 |-----------------|------|--------------------|--------------------|
 |40(106)          |1     |158                 |79                  |
 |                 |2     |315                 |118                 |
-|                 |4     |X                   |X                   |
 |100(273)         |1     |412                 |180                 |
 |                 |2     |820                 |250                 |
 |                 |4     |1400                |X                   |
 
-- 16b no compression, 2T2R, Benetel550 RU
-- Quectel RM520N, OTA, distance: 2m
+16b no compression, 2T2R, Benetel550 RU, Quectel RM520N, OTA, distance: 2m
 
 |Bandwidth MHz/PRB|Layers|DL Throughput (Mbps)|UL Throughput (Mbps)|
 |-----------------|------|--------------------|--------------------|
