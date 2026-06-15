@@ -18,7 +18,7 @@ The following results apply to the TDD configuration below:
 #### KPI with USRP
 
 |Bandwidth MHz/PRB|Layers|DL Throughput (Mbps)|UL Throughput (Mbps)|
-|-----------------|------|--------------------|--------------------|
+|-----------------|-----:|-------------------:|-------------------:|
 |20(51)           |1     |72                  |39                  |
 |                 |2     |143                 |65                  |
 |                 |4     |258                 |X                   |
@@ -41,7 +41,7 @@ The following results apply to the TDD configuration below:
 9b BFP, 4T4R, Benetel550 RU, Quectel RM520N, OTA, distance: 2m
 
 |Bandwidth MHz/PRB|Layers|DL Throughput (Mbps)|UL Throughput (Mbps)|
-|-----------------|------|--------------------|--------------------|
+|-----------------|-----:|-------------------:|-------------------:|
 |40(106)          |1     |158                 |79                  |
 |                 |2     |315                 |118                 |
 |100(273)         |1     |412                 |180                 |
@@ -51,7 +51,7 @@ The following results apply to the TDD configuration below:
 16b no compression, 2T2R, Benetel550 RU, Quectel RM520N, OTA, distance: 2m
 
 |Bandwidth MHz/PRB|Layers|DL Throughput (Mbps)|UL Throughput (Mbps)|
-|-----------------|------|--------------------|--------------------|
+|-----------------|-----:|-------------------:|-------------------:|
 |40(106)          |1     |158                 |67                  |
 |                 |2     |315                 |83                  |
 |100(273)         |1     |412                 |160                 |
@@ -75,7 +75,7 @@ The following results apply to the TDD configuration below:
 Radio Unit: MicroAmp
 
 |Bandwidth MHz/PRB|Layers|DL Throughput (Mbps)|UL Throughput (Mbps)|
-|-----------------|------|--------------------|--------------------|
+|-----------------|-----:|-------------------:|-------------------:|
 |200(132)         |1     |500                 |86                  |
 |                 |2     |890                 |x                   |
 
@@ -102,7 +102,7 @@ For execution details, see [physical-simulators.md](./physical-simulators.md).
 256 QAM modulation, 6 thread pool cores
 
 |Bandwidth MHz/PRB|Layers         |gNB TX processing (us) |Test Command                                                                             |
-|-----------------|---------------|-----------------------|-----------------------------------------------------------------------------------------|
+|-----------------|---------------|----------------------:|-----------------------------------------------------------------------------------------|
 |40(106)          |1              |35                     |nr_dlsim -n1000 -s30 -S30.2 -e25 -b106 -R106 -X 8,9,10,11,12,13,14,15 -P -q1             |
 |                 |2 (2 antennas) |52                     |nr_dlsim -n1000 -s40 -S40.2 -e25 -b106 -R106 -X 8,9,10,11,12,13,14,15 -P -q1 -x2 -z2 -y2 |
 |                 |  (4 antennas) |62                     |nr_dlsim -n1000 -s40 -S40.2 -e25 -b106 -R106 -X 8,9,10,11,12,13,14,15 -P -q1 -x2 -z4 -y4 |
@@ -115,7 +115,7 @@ For execution details, see [physical-simulators.md](./physical-simulators.md).
 64 QAM modulation, 8 thread pool cores
 
 |Bandwidth MHz/PRB|Layers|gNB RX processing (us) |Test Command                                                    |
-|-----------------|------|-----------------------|----------------------------------------------------------------|
+|-----------------|-----:|----------------------:|----------------------------------------------------------------|
 |40(106)          |1     |90                     |nr_ulsim -n1000 -s40 -S40.2 -m25 -r106 -R106 -C8 -P             |
 |                 |2     |247                    |nr_ulsim -n1000 -s40 -S40.2 -m25 -r106 -R106 -C8 -P -W2 -z2 -y2 |
 |100(273)         |1     |170                    |nr_ulsim -n1000 -s40 -S40.2 -m25 -r273 -R273 -C8 -P             |
@@ -144,7 +144,7 @@ Testbed Architecture:
 UE <--> Over the Air 1.5m to 2m distance <--> USRP/RU <--> gNB/DU server
 
 | Platform    | UE-Radio  | Bandwidth | DL Throughput | UL Throughput |
-| ----------- | --------- | --------- | ------------- | ------------- |
+| ----------- | --------- | --------- | ------------: | ------------: |
 | Jetson Orin | B210      | 10 MHz    | 12 Mbps       | 7.5 Mbps      |
 | Jetson Orin | B210      | 20 MHz    | 20 Mbps       | 9.5 Mbps      |
 | Jetson Orin | B210      | 30 MHz    | 61 Mbps       | 33 Mbps       |
