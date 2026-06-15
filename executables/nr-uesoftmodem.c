@@ -380,7 +380,7 @@ int main(int argc, char **argv)
         sl_ue_phy_init(UE_CC);
       }
 
-      ru_id++; // initially connect each UE and carrier to its own cell
+      //ru_id++; // initially connect each UE and carrier to its own cell
     }
   }
 
