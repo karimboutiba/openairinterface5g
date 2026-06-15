@@ -22,7 +22,13 @@ jobs:
 
     if: |
       github.event.action != 'labeled' ||
-      github.event.label.name == vars.RETRIGGER_CI_LABEL
+      github.event.label.name == vars.RETRIGGER_CI_LABEL ||
+      github.event.label.name == vars.CI_LABEL ||
+      github.event.label.name == vars.NRUE_LABEL ||
+      github.event.label.name == vars.NR_LABEL ||
+      github.event.label.name == vars.LTE_LABEL ||
+      github.event.label.name == vars.DOC_LABEL ||
+      github.event.label.name == vars.BUILD_ONLY_LABEL
 
     outputs:
       protected_files_changed: ${{ steps.filter.outputs.protected }}
@@ -59,13 +65,38 @@ jobs:
     steps:
       - run: echo "Maintainer has approved the changes"
 
+  check-labels:
+    runs-on: ubuntu-24.04
+    needs:
+      - detect-changes
+      - require-maintainer-approval
+
+    if: always() && github.event_name == 'pull_request_target' && github.event.pull_request.labels[0] == null && needs.require-maintainer-approval.result != 'failure'
+
+    steps:
+      - name: Check for missing labels
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} --body "Not performing CI due to the absence of one of the following mandatory labels:
+          - ${BASE_URL}/labels/${{ vars.DOC_LABEL }} (do not perform any stages)
+          - ${BASE_URL}/labels/${{ vars.BUILD_ONLY_LABEL }} (execute only build stages)
+          - ${BASE_URL}/labels/${{ vars.LTE_LABEL }} (perform 4G tests)
+          - ${BASE_URL}/labels/${{ vars.NR_LABEL }} (perform 5G tests)
+          - ${BASE_URL}/labels/${{ vars.NRUE_LABEL }} (perform only 5G-UE related tests including physims excluding LDPC tests)
+          - ${BASE_URL}/labels/${{ vars.CI_LABEL }} (perform both 4G and 5G tests)"
+          exit 1
+
   trigger-jenkins:
     needs:
+      - check-labels
       - detect-changes
       - require-maintainer-approval
 
     if: |
       always() &&
+      needs.check-labels.result != 'failure' &&
       (
         needs.detect-changes.outputs.protected_files_changed == 'false' ||
         needs.require-maintainer-approval.result == 'success'
