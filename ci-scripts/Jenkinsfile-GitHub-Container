@@ -900,6 +900,11 @@ pipeline {
     }
   }
   post {
+    always {
+      script {
+        echo "downstreamResults = ${downstreamResults}"
+      }
+    }
     success {
       script {
         if (env.GITHUB_PR_NUMBER) {
