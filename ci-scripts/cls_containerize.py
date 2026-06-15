@@ -644,11 +644,15 @@ class Containerize():
 			logging.error('\u001B[1m Undeploying objects Failed\u001B[0m')
 		return success
 
-	def AnalyzeRTStatsObject(self, HTML, node, ctx, thresholds, service=None):
+	def AnalyzeRTStatsObject(self, HTML, node, ctx, thresholds, service=None, stats_files=None):
 		logging.info(f'Analyzing realtime stats from server: {node}')
 		yaml = self.yamlPath.strip('/')
 		wd = f'{self.workspace}/{yaml}'
 		wd_yaml = f'{wd}/docker-compose.y*ml'
+
+		# fall back to default gNB stats files when none specified in XML
+		if not stats_files:
+			stats_files = ['/opt/oai-gnb/nrL1_stats.log', '/opt/oai-gnb/nrMAC_stats.log']
 
 		with cls_cmd.getConnection(node) as cmd:
 			services = GetDeployedServices(cmd, wd_yaml)
@@ -660,12 +664,13 @@ class Containerize():
 				raise RuntimeError(f"Requested service {s} not found among services: {deployed_services}")
 			logging.info(f"Analyzing deployed service '{s}'")
 			# similar to BuildRunTests(), use docker cp to avoid problems with permissions
-			cmd.run(f'docker compose -f {wd_yaml} cp {s}:/opt/oai-gnb/nrL1_stats.log {wd}/')
-			l1_file = archiveArtifact(cmd, ctx, f"{wd}/nrL1_stats.log")
-			cmd.run(f'docker compose -f {wd_yaml} cp {s}:/opt/oai-gnb/nrMAC_stats.log {wd}/')
-			mac_file = archiveArtifact(cmd, ctx, f"{wd}/nrMAC_stats.log")
+			local_files = []
+			for sf in stats_files:
+				basename = os.path.basename(sf)
+				cmd.run(f'docker compose -f {wd_yaml} cp {s}:{sf} {wd}/')
+				local_files.append(archiveArtifact(cmd, ctx, f"{wd}/{basename}"))
 
 		logging.info(f"check against thresholds from {thresholds}")
-		success, datalog_rt_stats = cls_analysis.Analysis.analyze_rt_stats(thresholds, l1_file, mac_file)
+		success, datalog_rt_stats = cls_analysis.Analysis.analyze_rt_stats(thresholds, *local_files)
 		HTML.CreateHtmlDataLogTable(datalog_rt_stats)
 		return success
