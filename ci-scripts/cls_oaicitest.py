@@ -638,3 +638,12 @@ class OaiCiTest():
 		message = "Log files:\n" + "\n".join([os.path.basename(l) for l in logs])
 		HTML.CreateHtmlTestRowQueue(core_name, 'OK', [message])
 		return True
+
+    def CollectFile(self, HTML, node, ctx, remote_host, remote_path):
+        logging.info(f'Collecting {remote_path} from {remote_host} via {node}')
+        wd = f'{self.workspace}/{self.yamlPath.strip("/")}'
+        basename = os.path.basename(remote_path)
+        with cls_cmd.getConnection(node) as cmd:
+            cmd.run(f'scp {remote_host}:{remote_path} {wd}/')
+            local_file = archiveArtifact(cmd, ctx, f'{wd}/{basename}')
+        return local_file is not None
