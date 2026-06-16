@@ -21,14 +21,16 @@ jobs:
     runs-on: ubuntu-24.04
 
     if: |
-      github.event.action != 'labeled' ||
-      github.event.label.name == vars.RETRIGGER_CI_LABEL ||
-      github.event.label.name == vars.CI_LABEL ||
-      github.event.label.name == vars.NRUE_LABEL ||
-      github.event.label.name == vars.NR_LABEL ||
-      github.event.label.name == vars.LTE_LABEL ||
-      github.event.label.name == vars.DOC_LABEL ||
-      github.event.label.name == vars.BUILD_ONLY_LABEL
+      !github.event.pull_request.draft && (
+        github.event.action != 'labeled' ||
+        github.event.label.name == vars.RETRIGGER_CI_LABEL ||
+        github.event.label.name == vars.CI_LABEL ||
+        github.event.label.name == vars.NRUE_LABEL ||
+        github.event.label.name == vars.NR_LABEL ||
+        github.event.label.name == vars.LTE_LABEL ||
+        github.event.label.name == vars.DOC_LABEL ||
+        github.event.label.name == vars.BUILD_ONLY_LABEL
+      )
 
     outputs:
       protected_files_changed: ${{ steps.filter.outputs.protected }}
@@ -71,7 +73,7 @@ jobs:
       - detect-changes
       - require-maintainer-approval
 
-    if: always() && github.event_name == 'pull_request_target' && github.event.pull_request.labels[0] == null && needs.require-maintainer-approval.result != 'failure'
+    if: always() && !github.event.pull_request.draft && github.event_name == 'pull_request_target' && github.event.pull_request.labels[0] == null && needs.require-maintainer-approval.result != 'failure'
 
     steps:
       - name: Check for missing labels
