@@ -1,0 +1,162 @@
+From d7aed369ff60005c0e1e4d7b57b62f56e3845926 Mon Sep 17 00:00:00 2001
+From: Cedric Roux <cedric.roux@eurecom.fr>
+Date: Mon, 27 Apr 2026 16:40:46 +0200
+Subject: [PATCH 15/21] NR-DC: handle UE context release
+
+Signed-off-by: Cedric Roux <cedric.roux@eurecom.fr>
+---
+ openair2/RRC/NR/rrc_gNB.c      | 21 ++++++++++++++++
+ openair2/RRC/NR/rrc_gNB_nrdc.c | 45 ++++++++++++++++++++++++++++++++--
+ openair2/RRC/NR/rrc_gNB_nrdc.h |  4 +++
+ 3 files changed, 68 insertions(+), 2 deletions(-)
+
+diff --git a/openair2/RRC/NR/rrc_gNB.c b/openair2/RRC/NR/rrc_gNB.c
+index 7d6ededea1..c54694a98d 100644
+--- a/openair2/RRC/NR/rrc_gNB.c
++++ b/openair2/RRC/NR/rrc_gNB.c
+@@ -3961,6 +3961,11 @@ static void rrc_CU_process_ue_context_release_request(MessageDef *msg_p, sctp_as
+   }
+ 
+   gNB_RRC_UE_t *UE = &ue_context_p->ue_context;
++
++  if (UE->nrdc != NULL)
++    /* UE has NR-DC connection, send release to the SCG DU */
++    nrdc_scg_ue_release(rrc, UE);
++
+   if (UE->ho_context != NULL) {
+     nr_ho_source_cu_t *source_ctx = UE->ho_context->source;
+     bool from_source_du = source_ctx && source_ctx->cell->assoc_id == assoc_id;
+@@ -4018,6 +4023,10 @@ static void rrc_delete_ue_data(gNB_RRC_UE_t *UE)
+   seq_arr_free(&UE->pduSessions, free_pdusession);
+   seq_arr_free(&UE->drbs, free_drb);
+   seq_arr_free(&UE->serving_cells, NULL);
++  if (UE->nrdc) {
++    free(UE->nrdc);
++    UE->nrdc = NULL;
++  }
+ }
+ 
+ void rrc_remove_ue(gNB_RRC_INST *rrc, rrc_gNB_ue_context_t *ue_context_p)
+@@ -4044,6 +4053,14 @@ static void rrc_CU_process_ue_context_release_complete(MessageDef *msg_p)
+   }
+ 
+   gNB_RRC_UE_t *UE = &ue_context_p->ue_context;
++
++  /* check if this message is for NR-DC */
++  if (UE->nrdc) {
++    /* if the message is handled by the NR-DC module, do nothing more */
++    if (nrdc_handle_f1_context_release_complete(rrc, UE, complete))
++      return;
++  }
++
+   if (UE->an_release) {
+     /* only trigger release if it has been requested by core
+      * otherwise, it might be CU that requested release on a DU during normal
+@@ -4966,6 +4983,10 @@ void rrc_gNB_generate_RRCRelease(gNB_RRC_INST *rrc, gNB_RRC_UE_t *UE)
+   deliver_ue_ctxt_release_data_t data = {.rrc = rrc, .release_cmd = &ue_context_release_cmd, .assoc_id = ue_data.du_assoc_id};
+   nr_pdcp_data_req_srb(UE->rrc_ue_id, DL_SCH_LCID_DCCH, rrc_gNB_mui++, size, buffer, rrc_deliver_ue_ctxt_release_cmd, &data);
+ 
++  /* if the UE is in NR-DC, release it from SCG DU */
++  if (UE->nrdc)
++    nrdc_scg_ue_release(rrc, UE);
++
+ #ifdef E2_AGENT
+   E2_AGENT_SIGNAL_DL_DCCH_RRC_MSG(buffer, size, NR_DL_DCCH_MessageType__c1_PR_rrcRelease);
+ #endif
+diff --git a/openair2/RRC/NR/rrc_gNB_nrdc.c b/openair2/RRC/NR/rrc_gNB_nrdc.c
+index e3ff12a198..7d33eae8f8 100644
+--- a/openair2/RRC/NR/rrc_gNB_nrdc.c
++++ b/openair2/RRC/NR/rrc_gNB_nrdc.c
+@@ -27,6 +27,8 @@ typedef enum {
+   NRDC_ACTIVE,
+   DEACTIVATE_NRDC_WAIT_FOR_F1_CONTEXT_MODIFICATION_RESPONSE,
+   DEACTIVATE_NRDC_WAIT_FOR_PDU_SESSION_RELEASE_RECONFIGURATION_COMPLETE,
++  NRDC_DU_CONTEXT_TO_RELEASE,
++  NRDC_DEACTIVATED
+ } nrdc_state_t;
+ 
+ typedef struct {
+@@ -38,6 +40,7 @@ typedef struct {
+   int meas_object_id;
+   int report_config_id;
+   int measurement_id;
++  int du_assoc_id;
+   uint32_t secondary_du_ue_id;
+   int drb_id;
+   int pdu_session_to_release;
+@@ -516,8 +519,7 @@ void rrc_gnb_nrdc_rrc_reconfiguration_complete_received(gNB_RRC_INST *rrc, gNB_R
+     }
+     rrc_gNB_send_NGAP_PDUSESSION_RELEASE_RESPONSE(rrc, ue, xid);
+     LOG_I(NR_RRC, "ue %d: NR-DC PDU session is removed\n", ue->rrc_ue_id);
+-    free(ue->nrdc);
+-    ue->nrdc = NULL;
++    nrdc->state = NRDC_DU_CONTEXT_TO_RELEASE;
+     return;
+   }
+ 
+@@ -660,6 +662,8 @@ void rrc_gnb_nrdc_measurement_received(gNB_RRC_INST *rrc, gNB_RRC_UE_t *ue, NR_M
+   *cg_configinfo = create_byte_array(cgbuf.size, cgbuf.buf);
+   free(cgbuf.buf);
+ 
++  nrdc->du_assoc_id = cell->assoc_id;
++
+   f1ap_ue_context_setup_req_t ue_context_setup_req = {
+     .gNB_CU_ue_id = ue->rrc_ue_id,
+     .plmn.mcc = cell->info.plmn.mcc,
+@@ -1105,3 +1109,40 @@ void nrdc_rrc_CU_process_ue_context_modification_response(gNB_RRC_UE_t *ue, gNB_
+   nrdc->state = DEACTIVATE_NRDC_WAIT_FOR_PDU_SESSION_RELEASE_RECONFIGURATION_COMPLETE;
+   nrdc->drb_id = -1;
+ }
++
++/* return true if the message is handled here */
++bool nrdc_handle_f1_context_release_complete(gNB_RRC_INST *rrc, gNB_RRC_UE_t *ue, f1ap_ue_context_rel_cplt_t *complete)
++{
++  if (ue->nrdc == NULL)
++    return false;
++  nrdc_ue_state_t *nrdc = ue->nrdc;
++
++  if (complete->gNB_DU_ue_id != nrdc->secondary_du_ue_id)
++    return false;
++
++  /* nothing to do for the moment, to be changed if needed */
++
++  LOG_I(NR_RRC, "NR-DC: UE %d received F1 UE Context Release Complete\n", ue->rrc_ue_id);
++
++  return true;
++}
++
++void nrdc_scg_ue_release(gNB_RRC_INST *rrc, gNB_RRC_UE_t *ue)
++{
++  if (ue->nrdc == NULL)
++    return;
++  nrdc_ue_state_t *nrdc = ue->nrdc;
++
++  LOG_I(NR_RRC, "NR-DC: release/deactivate SCG for UE %d\n", ue->rrc_ue_id);
++
++  f1ap_ue_context_rel_cmd_t cmd = {
++    .gNB_CU_ue_id = ue->rrc_ue_id,
++    .gNB_DU_ue_id = nrdc->secondary_du_ue_id,
++    .cause = F1AP_CAUSE_RADIO_NETWORK,
++    .cause_value = 10, // 10 = F1AP_CauseRadioNetwork_normal_release
++  };
++  rrc->mac_rrc.ue_context_release_command(nrdc->du_assoc_id, &cmd);
++
++  /* NR-DC is put to deactivated mode, release will happen when the UE is removed from the CU */
++  nrdc->state = NRDC_DEACTIVATED;
++}
+diff --git a/openair2/RRC/NR/rrc_gNB_nrdc.h b/openair2/RRC/NR/rrc_gNB_nrdc.h
+index c296943df5..1049c74a54 100644
+--- a/openair2/RRC/NR/rrc_gNB_nrdc.h
++++ b/openair2/RRC/NR/rrc_gNB_nrdc.h
+@@ -26,4 +26,8 @@ void nrdc_release_bearer(const gNB_RRC_INST *rrc, gNB_RRC_UE_t *ue, int bearer_i
+ bool rrc_gnb_nrdc_wait_for_f1_context_modification_response(gNB_RRC_UE_t *ue);
+ void nrdc_rrc_CU_process_ue_context_modification_response(gNB_RRC_UE_t *ue, gNB_RRC_INST *rrc, f1ap_ue_context_mod_resp_t *resp);
+ 
++bool nrdc_handle_f1_context_release_complete(gNB_RRC_INST *rrc, gNB_RRC_UE_t *ue, f1ap_ue_context_rel_cplt_t *complete);
++
++void nrdc_scg_ue_release(gNB_RRC_INST *rrc, gNB_RRC_UE_t *ue);
++
+ #endif /* __RRC_GNB_NRDC_H__ */
+-- 
+2.48.1
+

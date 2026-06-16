@@ -1,0 +1,110 @@
+From 2a7e25bdb438999bd1c7e190e4b76490865af685 Mon Sep 17 00:00:00 2001
+From: mahmoudb <mahmoudb@murrelet.sboai.cs.eurecom.fr>
+Date: Mon, 8 Jun 2026 19:42:18 +0200
+Subject: [PATCH 21/21] NR-DC + microamp beam fix: remove beam-0 dependency,
+ enable multi-beam attach and mobility switching
+
+---
+ common/utils/ds/CMakeLists.txt                       | 1 +
+ openair2/F1AP/f1ap_ids.c                             | 2 +-
+ openair2/LAYER2/NR_MAC_gNB/nrdc_mac_rrc_dl_handler.c | 2 +-
+ openair2/RRC/NR/rrc_gNB.c                            | 7 ++++---
+ openair2/RRC/NR/rrc_gNB_nrdc.c                       | 4 ++--
+ 5 files changed, 9 insertions(+), 7 deletions(-)
+
+diff --git a/common/utils/ds/CMakeLists.txt b/common/utils/ds/CMakeLists.txt
+index 6f9181c7b8..8071efbc79 100644
+--- a/common/utils/ds/CMakeLists.txt
++++ b/common/utils/ds/CMakeLists.txt
+@@ -5,6 +5,7 @@ add_library(ds OBJECT
+             byte_array_producer.c
+             seq_arr.c
+             shared_pointer.c
++            hashtable.c
+ )
+ 
+ target_include_directories(ds PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+diff --git a/openair2/F1AP/f1ap_ids.c b/openair2/F1AP/f1ap_ids.c
+index fa87084222..c5130893f2 100644
+--- a/openair2/F1AP/f1ap_ids.c
++++ b/openair2/F1AP/f1ap_ids.c
+@@ -8,7 +8,7 @@
+ #include "f1ap_ids.h"
+ 
+ #include <pthread.h>
+-#include "ds/hashtable.h"
++#include "common/utils/ds/hashtable.h"
+ #include "common/utils/assertions.h"
+ 
+ 
+diff --git a/openair2/LAYER2/NR_MAC_gNB/nrdc_mac_rrc_dl_handler.c b/openair2/LAYER2/NR_MAC_gNB/nrdc_mac_rrc_dl_handler.c
+index 8b5c78e407..0cabb78340 100644
+--- a/openair2/LAYER2/NR_MAC_gNB/nrdc_mac_rrc_dl_handler.c
++++ b/openair2/LAYER2/NR_MAC_gNB/nrdc_mac_rrc_dl_handler.c
+@@ -36,7 +36,7 @@ static NR_UE_info_t *nrdc_create_new_UE(gNB_MAC_INST *mac, uint32_t cu_id, const
+   /* mimic NSA way to create a new UE (with adaptations) */
+   NR_UE_NR_Capability_t *cap = get_ue_nr_cap_from_cg_config_info(cgci);
+   int ssb_index = get_ssbidx_from_beam(mac, UE->UE_beam_index);
+-  NR_CellGroupConfig_t *cellGroupConfig = get_default_secondaryCellGroup(scc, cap, 1, 1, configuration, UE->uid, ssb_index);
++  NR_CellGroupConfig_t *cellGroupConfig = get_default_secondaryCellGroup(scc, cap, 1, 1, configuration, UE->uid, ssb_index, UE->UE_beam_index);
+ 
+   cellGroupConfig->spCellConfig->reconfigurationWithSync = get_reconfiguration_with_sync(UE->rnti, UE->uid, scc, mac->frame);
+   UE->capability = cap;
+diff --git a/openair2/RRC/NR/rrc_gNB.c b/openair2/RRC/NR/rrc_gNB.c
+index 529fb6bd8e..42dcf42885 100644
+--- a/openair2/RRC/NR/rrc_gNB.c
++++ b/openair2/RRC/NR/rrc_gNB.c
+@@ -789,6 +789,7 @@ NR_MeasConfig_t *nr_rrc_get_measconfig(const gNB_RRC_INST *rrc, uint64_t nr_cell
+       */
+       LOG_D(NR_RRC, "Preparing A3 Event Measurement Configuration!\n");
+       bool default_a3_added = false; // To ensure that the default configuration is only added once
++      int default_a3_report_config_id = -1;
+       for (int i = 0; i < neighbour_cells->size; i++) {
+         nr_neighbour_cell_t *neighbourCell = (nr_neighbour_cell_t *)seq_arr_at(neighbour_cells, i);
+         seq_arr_push_back(&neigh_seq, neighbourCell, sizeof(nr_neighbour_cell_t));
+@@ -820,9 +821,9 @@ NR_MeasConfig_t *nr_rrc_get_measconfig(const gNB_RRC_INST *rrc, uint64_t nr_cell
+       }
+     }
+     if (rrc->measurementConfiguration.per_event)
+-      rc_PER = prepare_periodic_event_report(rrc->measurementConfiguration.per_event);
++      rc_PER = prepare_periodic_event_report(ue, rrc->measurementConfiguration.per_event);
+     if (rrc->measurementConfiguration.a2_event)
+-      rc_A2 = prepare_a2_event_report(rrc->measurementConfiguration.a2_event);
++      rc_A2 = prepare_a2_event_report(ue, rrc->measurementConfiguration.a2_event);
+ 
+     NR_MeasConfig_t *result = get_MeasConfig(ue, mt, band, cell->info.pci, rc_PER, rc_A2, &rc_A3_seq, &neigh_seq, neigh_a3_id);
+ 
+@@ -4235,7 +4236,7 @@ unsigned int mask_flip(unsigned int x) {
+ /** @brief Get F1AP QoS flow parameters from PDU session QoS parameters
+  * @param qos_param PDU session level QoS parameters from NGAP
+  * @return F1AP QoS flow parameters */
+-f1ap_qos_flow_param_t nr_rrc_get_f1_qos_flow_param(const pdusession_level_qos_parameter_t *qos_param)
++f1ap_qos_flow_param_t get_qos_char_from_qos_flow_param(const pdusession_level_qos_parameter_t *qos_param)
+ {
+   f1ap_qos_flow_param_t qos_char = {0};
+   if (qos_param->fiveQI_type == DYNAMIC) {
+diff --git a/openair2/RRC/NR/rrc_gNB_nrdc.c b/openair2/RRC/NR/rrc_gNB_nrdc.c
+index 0ac19ed56a..14445c1ec3 100644
+--- a/openair2/RRC/NR/rrc_gNB_nrdc.c
++++ b/openair2/RRC/NR/rrc_gNB_nrdc.c
+@@ -718,7 +718,7 @@ void rrc_gnb_nrdc_measurement_received(gNB_RRC_INST *rrc, gNB_RRC_UE_t *ue, NR_M
+   nr_rrc_qos_t *qos_param = (nr_rrc_qos_t *)seq_arr_at(&pdu->param.qos, 0);
+   DevAssert(qos_param->qos.qfi > 0);
+   drb->nr.flows[0].qfi = qos_param->qos.qfi;
+-  drb->nr.flows[0].param = nr_rrc_get_f1_qos_flow_param(&qos_param->qos);
++  drb->nr.flows[0].param = get_qos_char_from_qos_flow_param(&qos_param->qos);
+   /* the DRB QoS parameters: we just reuse the ones from the first flow */
+   drb->nr.drb_qos = drb->nr.flows[0].param;
+ 
+@@ -1335,7 +1335,7 @@ void nrdc_handle_scg_failure_information(gNB_RRC_INST *rrc, gNB_RRC_UE_t *ue, NR
+   nr_rrc_qos_t *qos_param = (nr_rrc_qos_t *)seq_arr_at(&pdu->param.qos, 0);
+   DevAssert(qos_param->qos.qfi > 0);
+   drb->nr.flows[0].qfi = qos_param->qos.qfi;
+-  drb->nr.flows[0].param = nr_rrc_get_f1_qos_flow_param(&qos_param->qos);
++  drb->nr.flows[0].param = get_qos_char_from_qos_flow_param(&qos_param->qos);
+   /* the DRB QoS parameters: we just reuse the ones from the first flow */
+   drb->nr.drb_qos = drb->nr.flows[0].param;
+ 
+-- 
+2.48.1
+

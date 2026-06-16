@@ -1,0 +1,135 @@
+From f6923424dac13d791e5a6e058ad4e49a77998ea7 Mon Sep 17 00:00:00 2001
+From: Cedric Roux <cedric.roux@eurecom.fr>
+Date: Tue, 12 May 2026 10:25:29 +0200
+Subject: [PATCH 18/21] NR-DC: configuration in conf file
+
+add this block (at top, outside of any other block) to the CU
+configuration file:
+
+nrdc = {
+  combinations = (
+    { mcg = 77, scg = 261 },
+    { mcg = 78, scg = 257 },
+  )
+}
+
+Signed-off-by: Cedric Roux <cedric.roux@eurecom.fr>
+---
+ openair2/GNB_APP/gnb_config.c        | 22 ++++++++++++++++++++++
+ openair2/GNB_APP/gnb_paramdef.h      | 14 ++++++++++++++
+ openair2/RRC/NR/nr_rrc_defs.h        |  3 +++
+ openair2/RRC/NR/nrdc_configuration.h | 18 ++++++++++++++++++
+ 4 files changed, 57 insertions(+)
+ create mode 100644 openair2/RRC/NR/nrdc_configuration.h
+
+diff --git a/openair2/GNB_APP/gnb_config.c b/openair2/GNB_APP/gnb_config.c
+index 69afa8b69a..4376c39021 100644
+--- a/openair2/GNB_APP/gnb_config.c
++++ b/openair2/GNB_APP/gnb_config.c
+@@ -1296,6 +1296,26 @@ static void config_pdcp(configmodule_interface_t *cfg, nr_pdcp_configuration_t *
+   pdcp_config->drb.discard_timer = config_get_processedint(cfg, &pdcp_params[CONFIG_NR_PDCP_DRB_DISCARD_TIMER_IDX]);
+ }
+ 
++static void config_nrdc(configmodule_interface_t *cfg, nrdc_configuration_t *nrdc_config)
++{
++  GET_PARAMS_LIST(nrdc_combination_list, nrdc_combination, NRDC_PARAMS_DESC, CONFIG_NRDC_COMBINATION_LIST, CONFIG_STRING_NRDC);
++
++  nrdc_config->combination_count = nrdc_combination_list.numelt;
++
++  LOG_I(NR_RRC, "NR-DC: %d combinations configured\n", nrdc_config->combination_count);
++
++  nrdc_config->combinations = calloc_or_fail(nrdc_config->combination_count, sizeof(nrdc_combination_t));
++  for (int i = 0; i < nrdc_combination_list.numelt; i++) {
++    const paramdef_t *combination = nrdc_combination_list.paramarray[i];
++    int mcg = *gpd(combination, sizeofArray(nrdc_combination), CONFIG_NRDC_MCG)->iptr;
++    int scg = *gpd(combination, sizeofArray(nrdc_combination), CONFIG_NRDC_SCG)->iptr;
++    LOG_I(NR_RRC, "NR-DC: combination %d: mcg band %d scg band %d\n", i, mcg, scg);
++
++    nrdc_config->combinations[i].mcg_band = mcg;
++    nrdc_config->combinations[i].scg_band = scg;
++  }
++}
++
+ void nfapi_stop_l1()
+ {
+   if (NFAPI_MODE && (NFAPI_MODE == NFAPI_MODE_AERIAL || NFAPI_MODE == NFAPI_MODE_VNF)) {
+@@ -2266,6 +2286,8 @@ gNB_RRC_INST *RCconfig_NRRRC()
+   config_rlc(config_get_if(), &rrc->rlc_config);
+   config_pdcp(config_get_if(), &rrc->pdcp_config);
+ 
++  config_nrdc(config_get_if(), &rrc->nrdc_config);
++
+   return rrc;
+ }
+ 
+diff --git a/openair2/GNB_APP/gnb_paramdef.h b/openair2/GNB_APP/gnb_paramdef.h
+index 8265303969..91a9c691e9 100644
+--- a/openair2/GNB_APP/gnb_paramdef.h
++++ b/openair2/GNB_APP/gnb_paramdef.h
+@@ -884,4 +884,18 @@ typedef enum {
+ 
+ /*----------------------------------------------------------------------*/
+ 
++#define CONFIG_STRING_NRDC "nrdc"
++
++#define CONFIG_NRDC_COMBINATION_LIST "combinations"
++
++#define CONFIG_NRDC_MCG "mcg"
++#define CONFIG_NRDC_SCG "scg"
++
++#define NRDC_PARAMS_DESC { \
++  { CONFIG_NRDC_MCG, "mcg", PARAMFLAG_MANDATORY, .iptr = NULL, .defintarrayval = 0, TYPE_INT, 0 }, \
++  { CONFIG_NRDC_SCG, "scg", PARAMFLAG_MANDATORY, .iptr = NULL, .defintarrayval = 0, TYPE_INT, 0 }, \
++}
++
++/*----------------------------------------------------------------------*/
++
+ #endif
+diff --git a/openair2/RRC/NR/nr_rrc_defs.h b/openair2/RRC/NR/nr_rrc_defs.h
+index b4c56fb7d3..d628f4af6e 100644
+--- a/openair2/RRC/NR/nr_rrc_defs.h
++++ b/openair2/RRC/NR/nr_rrc_defs.h
+@@ -36,6 +36,7 @@
+ #include "openair2/LAYER2/nr_pdcp/nr_pdcp_configuration.h"
+ #include "openair2/LAYER2/nr_rlc/nr_rlc_configuration.h"
+ #include "openair2/SDAP/nr_sdap/nr_sdap_configuration.h"
++#include "openair2/RRC/NR/nrdc_configuration.h"
+ 
+ typedef enum {
+   NR_RRC_OK=0,
+@@ -464,6 +465,8 @@ typedef struct gNB_RRC_INST_s {
+   // PDCP configuration parameters loaded during startup
+   nr_pdcp_configuration_t pdcp_config;
+   nr_rlc_configuration_t rlc_config;
++
++  nrdc_configuration_t nrdc_config;
+ } gNB_RRC_INST;
+ 
+ /** Forward declaration for UE log macros */
+diff --git a/openair2/RRC/NR/nrdc_configuration.h b/openair2/RRC/NR/nrdc_configuration.h
+new file mode 100644
+index 0000000000..6fc9674795
+--- /dev/null
++++ b/openair2/RRC/NR/nrdc_configuration.h
+@@ -0,0 +1,18 @@
++/*
++ * SPDX-License-Identifier: LicenseRef-CSSL-1.0
++ */
++
++#ifndef _NRDC_CONFIGURATION_H_
++#define _NRDC_CONFIGURATION_H_
++
++typedef struct {
++  int mcg_band;
++  int scg_band;
++} nrdc_combination_t;
++
++typedef struct {
++  int combination_count;
++  nrdc_combination_t *combinations;
++} nrdc_configuration_t;
++
++#endif /* _NRDC_CONFIGURATION_H_ */
+-- 
+2.48.1
+

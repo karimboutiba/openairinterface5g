@@ -1,0 +1,51 @@
+From a089c49fce9fc94fa2bf8609e407ed041f0b7a00 Mon Sep 17 00:00:00 2001
+From: Cedric Roux <cedric.roux@eurecom.fr>
+Date: Mon, 11 May 2026 16:16:14 +0200
+Subject: [PATCH 17/21] NR-DC: release the UE only when it's configured
+
+Signed-off-by: Cedric Roux <cedric.roux@eurecom.fr>
+---
+ openair2/RRC/NR/rrc_gNB_nrdc.c | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/openair2/RRC/NR/rrc_gNB_nrdc.c b/openair2/RRC/NR/rrc_gNB_nrdc.c
+index 51010bafff..2c4ed606b8 100644
+--- a/openair2/RRC/NR/rrc_gNB_nrdc.c
++++ b/openair2/RRC/NR/rrc_gNB_nrdc.c
+@@ -1141,12 +1141,33 @@ bool nrdc_handle_f1_context_release_complete(gNB_RRC_INST *rrc, gNB_RRC_UE_t *ue
+   return true;
+ }
+ 
++static bool is_ue_releasable(gNB_RRC_UE_t *ue)
++{
++  if (ue->nrdc == NULL)
++    return false;
++
++  nrdc_ue_state_t *nrdc = ue->nrdc;
++
++  if (nrdc->state == NRDC_NONE
++      || nrdc->state == ACTIVATE_NRDC_WAIT_FOR_CAPABILITIES
++      || nrdc->state == ACTIVATE_NRDC_WAIT_FOR_A4_RECONFIGURATION_COMPLETE
++      || nrdc->state == ACTIVATE_NRDC_WAIT_FOR_SCG_MEASUREMENT
++      || nrdc->state == NRDC_DEACTIVATED)
++    return false;
++
++  return true;
++}
++
+ void nrdc_scg_ue_release(gNB_RRC_INST *rrc, gNB_RRC_UE_t *ue)
+ {
+   if (ue->nrdc == NULL)
+     return;
+   nrdc_ue_state_t *nrdc = ue->nrdc;
+ 
++  /* if the UE is not fully configured yet, do nothing */
++  if (!is_ue_releasable(ue))
++    return;
++
+   LOG_I(NR_RRC, "NR-DC: release/deactivate SCG for UE %d\n", ue->rrc_ue_id);
+ 
+   f1ap_ue_context_rel_cmd_t cmd = {
+-- 
+2.48.1
+

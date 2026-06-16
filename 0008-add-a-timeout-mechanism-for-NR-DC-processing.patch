@@ -1,0 +1,197 @@
+From 2bb73ee89f75fd010a6b069617659ec6b4df82b7 Mon Sep 17 00:00:00 2001
+From: Cedric Roux <cedric.roux@eurecom.fr>
+Date: Wed, 7 Jan 2026 12:02:26 +0100
+Subject: [PATCH 08/21] add a timeout mechanism for NR-DC processing
+
+nr_ulsim and nr_dlsim need time_management_core to compile
+
+Signed-off-by: Cedric Roux <cedric.roux@eurecom.fr>
+---
+ CMakeLists.txt                       |  5 ++
+ openair2/COMMON/rrc_messages_def.h   |  1 +
+ openair2/COMMON/rrc_messages_types.h |  7 +++
+ openair2/RRC/NR/rrc_gNB.c            |  4 ++
+ openair2/RRC/NR/rrc_gNB_nrdc.c       | 68 ++++++++++++++++++++++++++++
+ openair2/RRC/NR/rrc_gNB_nrdc.h       |  1 +
+ 6 files changed, 86 insertions(+)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 09b7082523..25e9c35dce 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -2022,8 +2022,13 @@ add_executable(nr_dlsim
+   ${PHY_INTERFACE_DIR}/queue_t.c
+   )
+ target_link_libraries(nr_dlsim PRIVATE
++<<<<<<< HEAD
+   -Wl,--start-group UTIL SIMU PHY_COMMON PHY_NR_COMMON PHY_NR PHY_NR_UE SCHED_NR_LIB SCHED_NR_UE_LIB MAC_UE_NR MAC_NR_COMMON CONFIG_LIB L2_NR -Wl,--end-group
+   m pthread ${T_LIB} ITTI dl nr_ue_phy_meas physim_common
++=======
++  -Wl,--start-group UTIL SIMU PHY_NR_COMMON PHY_NR PHY_NR_UE SCHED_NR_LIB SCHED_NR_UE_LIB MAC_UE_NR MAC_NR_COMMON CONFIG_LIB L2_NR time_management_core -Wl,--end-group
++  m pthread ${T_LIB} ITTI dl nr_ue_phy_meas physim_common NR_L2_UE
++>>>>>>> ca7ae2ac3d (add a timeout mechanism for NR-DC processing)
+   softmodem_common
+   )
+ target_link_libraries(nr_dlsim PRIVATE asn1_nr_rrc_hdrs asn1_lte_rrc_hdrs)
+diff --git a/openair2/COMMON/rrc_messages_def.h b/openair2/COMMON/rrc_messages_def.h
+index ea93b43895..f850e7797e 100644
+--- a/openair2/COMMON/rrc_messages_def.h
++++ b/openair2/COMMON/rrc_messages_def.h
+@@ -62,6 +62,7 @@ MESSAGE_DEF(NAS_INIT_NOS1_IF, MESSAGE_PRIORITY_MED, nas_nos1_msg_t, nas_init_nos
+ // xNB: realtime -> RRC messages
+ MESSAGE_DEF(RRC_SUBFRAME_PROCESS,       MESSAGE_PRIORITY_MED,       RrcSubframeProcess,         rrc_subframe_process)
+ MESSAGE_DEF(NRRRC_FRAME_PROCESS,        MESSAGE_PRIORITY_MED,       NRRrcFrameProcess,          nr_rrc_frame_process)
++MESSAGE_DEF(NR_RRC_NRDC_TIMEOUT,        MESSAGE_PRIORITY_MED,       nr_rrc_nrdc_timeout_t,      nr_rrc_nrdc_timeout)
+ 
+ // eNB: RLC -> RRC messages
+ MESSAGE_DEF(RLC_SDU_INDICATION,         MESSAGE_PRIORITY_MED,       RlcSduIndication,           rlc_sdu_indication)
+diff --git a/openair2/COMMON/rrc_messages_types.h b/openair2/COMMON/rrc_messages_types.h
+index 116b823c19..8ea0ce8ec5 100644
+--- a/openair2/COMMON/rrc_messages_types.h
++++ b/openair2/COMMON/rrc_messages_types.h
+@@ -79,6 +79,7 @@
+ 
+ #define RRC_SUBFRAME_PROCESS(mSGpTR)    (mSGpTR)->ittiMsg.rrc_subframe_process
+ #define NRRRC_FRAME_PROCESS(mSGpTR)     (mSGpTR)->ittiMsg.nr_rrc_frame_process
++#define NR_RRC_NRDC_TIMEOUT(mSGpTR)     (mSGpTR)->ittiMsg.nr_rrc_nrdc_timeout
+ 
+ #define RLC_SDU_INDICATION(mSGpTR)      (mSGpTR)->ittiMsg.rlc_sdu_indication
+ #define NRDuDlReq(mSGpTR)      (mSGpTR)->ittiMsg.nr_du_dl_req
+@@ -484,4 +485,10 @@ typedef struct {
+   } payload;
+ } nr_mac_rrc_message_t;
+ 
++typedef struct {
++  uint64_t ue_id;
++  int xid;
++  int state;
++} nr_rrc_nrdc_timeout_t;
++
+ #endif /* RRC_MESSAGES_TYPES_H_ */
+diff --git a/openair2/RRC/NR/rrc_gNB.c b/openair2/RRC/NR/rrc_gNB.c
+index cfc08c83ab..a6e952900b 100644
+--- a/openair2/RRC/NR/rrc_gNB.c
++++ b/openair2/RRC/NR/rrc_gNB.c
+@@ -4803,6 +4803,10 @@ void *rrc_gnb_task(void *args_p)
+         rrc_gNB_free_Handover_Command(&NGAP_HANDOVER_COMMAND(msg_p)); // Free transfered NG message
+         break;
+ 
++      case NR_RRC_NRDC_TIMEOUT:
++        rrc_gnb_nrdc_timeout(RC.nrrrc[instance], &NR_RRC_NRDC_TIMEOUT(msg_p));
++        break;
++
+       default:
+         LOG_E(NR_RRC, "[gNB %ld] Received unexpected message %s\n", instance, msg_name_p);
+         break;
+diff --git a/openair2/RRC/NR/rrc_gNB_nrdc.c b/openair2/RRC/NR/rrc_gNB_nrdc.c
+index 074144e6b4..5d3aa6e8c8 100644
+--- a/openair2/RRC/NR/rrc_gNB_nrdc.c
++++ b/openair2/RRC/NR/rrc_gNB_nrdc.c
+@@ -10,6 +10,7 @@
+ #include "LAYER2/NR_MAC_COMMON/nr_mac.h"
+ #include "NR_UE-CapabilityRequestFilterNR.h"
+ #include "NR_UECapabilityEnquiry-v1560-IEs.h"
++#include "common/utils/time_manager/time_timer.h"
+ 
+ typedef enum {
+   NRDC_NONE,
+@@ -21,6 +22,7 @@ typedef struct {
+   int mcg_band;
+   int scg_band;
+   int xid;
++  void *timer;
+ } nrdc_ue_state_t;
+ 
+ static int generate_ue_capability_enquiry(uint8_t *out, int outsize, int xid, int mcg_band, int scg_band)
+@@ -153,6 +155,26 @@ static int generate_ue_capability_enquiry(uint8_t *out, int outsize, int xid, in
+   return (size.encoded + 7) / 8;
+ }
+ 
++/* called from timer thread, so simply send a "nrdc timeout" ITTI message to
++ * RRC that will do the real work
++ */
++static void timeout(void **p, uint64_t *v)
++{
++  gNB_RRC_INST *rrc = p[0];
++  uint64_t ue_id = v[0];
++  int xid = v[1];
++  nrdc_state_t state = v[2];
++
++  MessageDef *message_p = itti_alloc_new_message(TASK_RRC_GNB, rrc->module_id, NR_RRC_NRDC_TIMEOUT);
++  nr_rrc_nrdc_timeout_t *m = &NR_RRC_NRDC_TIMEOUT(message_p);
++  memset(m, 0, sizeof(*m));
++  m->ue_id = ue_id;
++  m->xid = xid;
++  m->state = state;
++
++  itti_send_msg_to_task(TASK_RRC_GNB, rrc->module_id, message_p);
++}
++
+ /* This function checks that the CU has DUs connected that correspond
+  * to a configured NR-DC combination.
+  * For the first one that is found, the UE capabilities for NR-DC are
+@@ -188,4 +210,50 @@ void rrc_gnb_nrdc_start(gNB_RRC_INST *rrc, gNB_RRC_UE_t *ue)
+   /* send it to the UE */
+   uint32_t msg_id = NR_DL_DCCH_MessageType__c1_PR_ueCapabilityEnquiry;
+   nr_rrc_transfer_protected_rrc_message(rrc, ue, DL_SCH_LCID_DCCH, msg_id, ue_cap, size);
++
++  /* start a timer to react after some time (2s, arbitrary value) if the UE does not reply */
++  nrdc->timer = tick_timeout_start(2000, timeout,
++                                  (void *[]){ rrc }, 1,
++                                  (uint64_t []){ ue->rrc_ue_id, xid, nrdc->state }, 3);
++}
++
++void rrc_gnb_nrdc_timeout(gNB_RRC_INST *rrc, nr_rrc_nrdc_timeout_t *timeout)
++{
++  rrc_gNB_ue_context_t *ue_context = rrc_gNB_get_ue_context(rrc, timeout->ue_id);
++  if (!ue_context) {
++    LOG_W(NR_RRC, "UE %"PRIu64" not found, discard NR-DC timeout\n", timeout->ue_id);
++    return;
++  }
++  gNB_RRC_UE_t *ue = &ue_context->ue_context;
++  int state = timeout->state;
++  int xid = timeout->xid;
++
++  nrdc_ue_state_t *nrdc = ue->nrdc;
++  if (!nrdc) {
++    LOG_W(NR_RRC, "no NR-DC context found for ue %d, discard timeout\n", ue->rrc_ue_id);
++    return;
++  }
++  if (nrdc->state != state) {
++    LOG_W(NR_RRC, "bad state %d for NR-DC context of ue %d, discard timeout\n", state, ue->rrc_ue_id);
++    return;
++  }
++  if (nrdc->xid != xid) {
++    LOG_W(NR_RRC, "bad xid %d for NR-DC context of ue %d, discard timeout\n", xid, ue->rrc_ue_id);
++    return;
++  }
++
++  /* stop the timer (if any) */
++  if (nrdc->timer)
++    tick_timeout_stop(nrdc->timer);
++  nrdc->timer = 0;
++
++  /* clear the current action for this xid (if any) */
++  if (xid != -1) {
++    ue->xids[xid] = RRC_ACTION_NONE;
++  }
++
++  /* cancel the NR-DC activation procedure */
++  LOG_E(NR_RRC, "timeout, cancelling NR-DC activation procedure for UE %d\n", ue->rrc_ue_id);
++  free(ue->nrdc);
++  ue->nrdc = 0;
+ }
+diff --git a/openair2/RRC/NR/rrc_gNB_nrdc.h b/openair2/RRC/NR/rrc_gNB_nrdc.h
+index ca8be694a5..c66ad387b5 100644
+--- a/openair2/RRC/NR/rrc_gNB_nrdc.h
++++ b/openair2/RRC/NR/rrc_gNB_nrdc.h
+@@ -10,5 +10,6 @@
+ #include "NR_UL-DCCH-Message.h"
+ 
+ void rrc_gnb_nrdc_start(gNB_RRC_INST *rrc, gNB_RRC_UE_t *ue);
++void rrc_gnb_nrdc_timeout(gNB_RRC_INST *rrc, nr_rrc_nrdc_timeout_t *timeout);
+ 
+ #endif /* __RRC_GNB_NRDC_H__ */
+-- 
+2.48.1
+

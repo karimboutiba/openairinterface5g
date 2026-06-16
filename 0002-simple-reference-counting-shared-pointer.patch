@@ -1,0 +1,148 @@
+From 37af6fbf72871b2c97475afbaa0f53ac59c6c9d5 Mon Sep 17 00:00:00 2001
+From: Cedric Roux <cedric.roux@eurecom.fr>
+Date: Fri, 21 Nov 2025 10:36:19 +0100
+Subject: [PATCH 02/21] simple reference counting shared pointer
+
+Signed-off-by: Cedric Roux <cedric.roux@eurecom.fr>
+---
+ common/utils/ds/CMakeLists.txt                |  3 +-
+ common/utils/ds/shared_pointer.c              | 48 +++++++++++++++++++
+ common/utils/ds/shared_pointer.h              | 21 ++++++++
+ common/utils/ds/tests/test_seq_array.c        | 10 ++++
+ .../utils/time_manager/tests/CMakeLists.txt   |  2 +-
+ 5 files changed, 81 insertions(+), 3 deletions(-)
+ create mode 100644 common/utils/ds/shared_pointer.c
+ create mode 100644 common/utils/ds/shared_pointer.h
+
+diff --git a/common/utils/ds/CMakeLists.txt b/common/utils/ds/CMakeLists.txt
+index 7007d77fac..6f9181c7b8 100644
+--- a/common/utils/ds/CMakeLists.txt
++++ b/common/utils/ds/CMakeLists.txt
+@@ -4,8 +4,7 @@ add_library(ds OBJECT
+             byte_array.c
+             byte_array_producer.c
+             seq_arr.c
+-            hashtable.c
+-            obj_hashtable.c
++            shared_pointer.c
+ )
+ 
+ target_include_directories(ds PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+diff --git a/common/utils/ds/shared_pointer.c b/common/utils/ds/shared_pointer.c
+new file mode 100644
+index 0000000000..a80094c3c6
+--- /dev/null
++++ b/common/utils/ds/shared_pointer.c
+@@ -0,0 +1,48 @@
++/*
++ * SPDX-License-Identifier: LicenseRef-CSSL-1.0
++ */
++
++#include "shared_pointer.h"
++#include "common/utils/utils.h"
++
++static void lock(shared_pointer_t *p)
++{
++  DevAssert(pthread_mutex_lock(&p->m) == 0);
++}
++
++static void unlock(shared_pointer_t *p)
++{
++  DevAssert(pthread_mutex_unlock(&p->m) == 0);
++}
++
++shared_pointer_t *new_shared_pointer(void *p, void (*free)(void *p))
++{
++  shared_pointer_t *s = malloc_or_fail(sizeof(*s));
++  s->p = p;
++  s->free = free;
++  s->count = 1;
++  pthread_mutex_init(&s->m, NULL);
++  return s;
++}
++
++void unref_shared_pointer(shared_pointer_t *p)
++{
++  lock(p);
++  AssertFatal(p->count, "unref_shared_pointer() called for a pointer with count == 0\n");
++  p->count--;
++  if (p->count) {
++    unlock(p);
++    return;
++  }
++  unlock(p);
++  p->free(p->p);
++  free(p);
++}
++
++void ref_shared_pointer(shared_pointer_t *p)
++{
++  lock(p);
++  AssertFatal(p->count, "ref_shared_pointer() called for a pointer with count == 0\n");
++  p->count++;
++  unlock(p);
++}
+diff --git a/common/utils/ds/shared_pointer.h b/common/utils/ds/shared_pointer.h
+new file mode 100644
+index 0000000000..babd82ea89
+--- /dev/null
++++ b/common/utils/ds/shared_pointer.h
+@@ -0,0 +1,21 @@
++/*
++ * SPDX-License-Identifier: LicenseRef-CSSL-1.0
++ */
++
++#ifndef COMMON_UTILS_DS_SHARED_POINTER_H
++#define COMMON_UTILS_DS_SHARED_POINTER_H
++
++#include <pthread.h>
++
++typedef struct {
++  void *p;
++  void (*free)(void *p);
++  int count;
++  pthread_mutex_t m;
++} shared_pointer_t;
++
++shared_pointer_t *new_shared_pointer(void *p, void (*free)(void *p));
++void unref_shared_pointer(shared_pointer_t *p);
++void ref_shared_pointer(shared_pointer_t *p);
++
++#endif /* COMMON_UTILS_DS_SHARED_POINTER_H */
+diff --git a/common/utils/ds/tests/test_seq_array.c b/common/utils/ds/tests/test_seq_array.c
+index 338a8fd5bb..1634d320a7 100644
+--- a/common/utils/ds/tests/test_seq_array.c
++++ b/common/utils/ds/tests/test_seq_array.c
+@@ -7,6 +7,16 @@
+ #include "../../alg/foreach.h"
+ #include <assert.h>
+ 
++/* needed because shared_pointer.c is using DevAssert() and AssertFatal() */
++void exit_function(const char *file, const char *function, const int line, const char *s, const int assert)
++{
++  if (assert) {
++    abort();
++  } else {
++    exit(EXIT_SUCCESS);
++  }
++}
++
+ /*
+   Example to show seq_arr_t capabilities and usage
+   To compile: gcc test_seq_array.c ../seq_arr.c  ../../alg/find.c ../../alg/foreach.c
+diff --git a/common/utils/time_manager/tests/CMakeLists.txt b/common/utils/time_manager/tests/CMakeLists.txt
+index 2403f248e8..6c6f83bfeb 100644
+--- a/common/utils/time_manager/tests/CMakeLists.txt
++++ b/common/utils/time_manager/tests/CMakeLists.txt
+@@ -6,7 +6,7 @@ target_link_libraries(test_time_manager_manual LOG CONFIG_LIB)
+ 
+ add_executable(test_time_manager_auto test_auto.c)
+ target_link_libraries(test_time_manager_auto time_management)
+-target_link_libraries(test_time_manager_auto LOG CONFIG_LIB)
++target_link_libraries(test_time_manager_auto LOG CONFIG_LIB ds)
+ 
+ add_dependencies(tests test_time_manager_auto)
+ add_test(NAME time_management_tests
+-- 
+2.48.1
+

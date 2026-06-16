@@ -1,0 +1,703 @@
+From ed7fd88a0d0cc95567b36f61aec1a0335a3d465a Mon Sep 17 00:00:00 2001
+From: Cedric Roux <cedric.roux@eurecom.fr>
+Date: Fri, 24 Apr 2026 16:07:42 +0200
+Subject: [PATCH 14/21] NR-DC: handle PDU session release
+
+Samsung S25 does a PDU session release request when we do "airplane mode",
+we have to deal with it (if not: crash of DU).
+
+Code is not clean.
+
+According to 38.331, it's forbidden to have SRB2 without DRB. So when the
+UE asks to remove the last DRB present, we should do what? RRRelease?
+
+With S25 in standard SA mode, we remove DRB + RLC entity + forward PDU
+session release coming from core network, all of this in one RRC
+Reconfiguration. Trying to do the same with NR-DC miserably fails. If I
+understand 38.331 correctly, to remove the RLC that lives in the SCG DU
+I have to embed an mrdc-SecondaryCellGroupConfig into the RRC Reconfiguration
+one. This mrdc-SecondaryCellGroupConfig contains an RRC Reconfiguration
+that contains a secondaryCellGroup. This secondaryCellGroup contains
+rlc-BearerToReleaseList with the LCID of the RLC entity to remove.
+This is to mimic the SA mode. But it fails. So instead, we only send
+the core network PDU session release. Then the S25 is happy and follows
+with a Deregistration.
+
+But testing with a quectel module (without quectel-CM, only minicom), and
+doing:
+    at+cgact=1,1     (activate a PDU session)
+    at+cgact=0,1     (release it)
+    at+cgact=1,1     (activate again)
+fails for the second activation. When the quectel module gets the RRC
+Reconfiguration that activates the second PDU session, it rejects it and
+does RRC Reestablishment. Probably because we did not release the DRB
+and the RLC entity in the previous step.
+
+So be it for the time being, act/deact/act is not supported.
+
+Signed-off-by: Cedric Roux <cedric.roux@eurecom.fr>
+---
+ .../LAYER2/NR_MAC_gNB/mac_rrc_dl_handler.c    |  36 +++-
+ .../LAYER2/NR_MAC_gNB/mac_rrc_dl_handler.h    |   2 +
+ openair2/LAYER2/NR_MAC_gNB/nr_mac_gNB.h       |   2 +
+ .../NR_MAC_gNB/nrdc_mac_rrc_dl_handler.c      |  98 ++++++++-
+ .../NR_MAC_gNB/nrdc_mac_rrc_dl_handler.h      |   1 +
+ openair2/RRC/NR/rrc_gNB.c                     |  92 +++++++-
+ openair2/RRC/NR/rrc_gNB_nrdc.c                | 196 +++++++++++++++++-
+ openair2/RRC/NR/rrc_gNB_nrdc.h                |   6 +
+ 8 files changed, 415 insertions(+), 18 deletions(-)
+
+diff --git a/openair2/LAYER2/NR_MAC_gNB/mac_rrc_dl_handler.c b/openair2/LAYER2/NR_MAC_gNB/mac_rrc_dl_handler.c
+index 3db6e9faef..cbc8b70426 100644
+--- a/openair2/LAYER2/NR_MAC_gNB/mac_rrc_dl_handler.c
++++ b/openair2/LAYER2/NR_MAC_gNB/mac_rrc_dl_handler.c
+@@ -602,7 +602,7 @@ static NR_UE_info_t *create_new_UE(gNB_MAC_INST *mac, uint32_t cu_id, const NR_C
+  * decode/re-encode cycles per TS 38.473 transparency requirements.
+  * @param cellGroup CellGroupConfig to encode
+  * @return Encoded byte array */
+-static byte_array_t encode_cellgroup_config(const NR_CellGroupConfig_t *cellGroup)
++byte_array_t encode_cellgroup_config(const NR_CellGroupConfig_t *cellGroup)
+ {
+   byte_array_t cgc = {0};
+   ssize_t encoded = uper_encode_to_new_buffer(&asn_DEF_NR_CellGroupConfig, NULL, cellGroup, (void **)&cgc.buf);
+@@ -808,6 +808,15 @@ void ue_context_modification_request(const f1ap_ue_context_mod_req_t *req)
+     .gNB_DU_ue_id = req->gNB_DU_ue_id,
+   };
+ 
++  /* special handling for NR-DC UEs */
++  NR_SCHED_LOCK(&mac->sched_lock);
++  NR_UE_info_t *UE = find_nr_UE(&RC.nrmac[0]->UE_info, req->gNB_DU_ue_id);
++  if (UE->nrdc_mode) {
++    NR_SCHED_UNLOCK(&mac->sched_lock);
++    return nrdc_ue_context_modification_request(req);
++  }
++  NR_SCHED_UNLOCK(&mac->sched_lock);
++
+   NR_UE_NR_Capability_t *ue_cap = NULL;
+   if (req->cu_to_du_rrc_info != NULL) {
+     AssertFatal(req->cu_to_du_rrc_info->cg_configinfo == NULL, "CG-ConfigInfo not handled\n");
+@@ -818,7 +827,7 @@ void ue_context_modification_request(const f1ap_ue_context_mod_req_t *req)
+   }
+ 
+   NR_SCHED_LOCK(&mac->sched_lock);
+-  NR_UE_info_t *UE = find_nr_UE(&RC.nrmac[0]->UE_info, req->gNB_DU_ue_id);
++  UE = find_nr_UE(&RC.nrmac[0]->UE_info, req->gNB_DU_ue_id);
+   if (!UE) {
+     LOG_E(NR_MAC, "could not find UE with RNTI %04x\n", req->gNB_DU_ue_id);
+     NR_SCHED_UNLOCK(&mac->sched_lock);
+@@ -900,6 +909,29 @@ void ue_context_modification_request(const f1ap_ue_context_mod_req_t *req)
+     UE->reconfigCellGroup = new_CellGroup;
+     configure_UE_BWP(mac, scc, UE, false, NR_SearchSpace__searchSpaceType_PR_common, -1, -1);
+   } else {
++    /* hack: for NR-DC, remove the RLC bearer from the MCG group config
++     * of the UE. This bearer is transfered to the SCG.
++     * We check if the modification request asks to remove a bearer and adds
++     * no bearer. If yes, we are doing the NR-DC scenario (hopefully).
++     * This hack has to be removed in the future. (No other solution
++     * was found.)
++     */
++    if (req->drbs_rel_len == 1 && req->srbs_len == 0 && req->drbs_len == 0
++        && req->cu_to_du_rrc_info == NULL && req->rrc_container == NULL) {
++      /* remove the RLC from UE->CellGroup->rlc_BearerToAddModList */
++      long lcid = get_lcid_from_drbid(req->drbs_rel[0].id);
++      LOG_I(NR_MAC, "NR-DC hack: remove RLC lcid %ld from UE cell group config\n", lcid);
++      NR_CellGroupConfig_t *cellGroupConfig = UE->CellGroup;
++      int idx = 0;
++      while (idx < cellGroupConfig->rlc_BearerToAddModList->list.count) {
++        const NR_RLC_BearerConfig_t *bc = cellGroupConfig->rlc_BearerToAddModList->list.array[idx];
++        if (bc->logicalChannelIdentity == lcid)
++          break;
++        idx++;
++      }
++      DevAssert(idx < cellGroupConfig->rlc_BearerToAddModList->list.count);
++      asn_sequence_del(&cellGroupConfig->rlc_BearerToAddModList->list, idx, 1);
++    }
+     ASN_STRUCT_FREE(asn_DEF_NR_CellGroupConfig, new_CellGroup); // we actually don't need it
+   }
+ 
+diff --git a/openair2/LAYER2/NR_MAC_gNB/mac_rrc_dl_handler.h b/openair2/LAYER2/NR_MAC_gNB/mac_rrc_dl_handler.h
+index f0f1e44543..9c8f4f085d 100644
+--- a/openair2/LAYER2/NR_MAC_gNB/mac_rrc_dl_handler.h
++++ b/openair2/LAYER2/NR_MAC_gNB/mac_rrc_dl_handler.h
+@@ -33,4 +33,6 @@ int handle_ue_context_drbs_setup(NR_UE_info_t *UE,
+                                  NR_CellGroupConfig_t *cellGroupConfig,
+                                  const nr_rlc_configuration_t *rlc_config);
+ 
++byte_array_t encode_cellgroup_config(const NR_CellGroupConfig_t *cellGroup);
++
+ #endif /* MAC_RRC_DL_HANDLER_H */
+diff --git a/openair2/LAYER2/NR_MAC_gNB/nr_mac_gNB.h b/openair2/LAYER2/NR_MAC_gNB/nr_mac_gNB.h
+index c659a74e6b..e946d77643 100644
+--- a/openair2/LAYER2/NR_MAC_gNB/nr_mac_gNB.h
++++ b/openair2/LAYER2/NR_MAC_gNB/nr_mac_gNB.h
+@@ -807,6 +807,8 @@ typedef struct NR_UE_info {
+   // The below ID is the "true" (non-consecutive) BWP ID from the gNB's point of view
+   NR_BWP_Id_t local_bwp_id;
+   context_modification_info_t cm_info;
++  /* if nrdc_mode is true then the DU is an SCG DU */
++  bool nrdc_mode;
+ } NR_UE_info_t;
+ 
+ typedef struct {
+diff --git a/openair2/LAYER2/NR_MAC_gNB/nrdc_mac_rrc_dl_handler.c b/openair2/LAYER2/NR_MAC_gNB/nrdc_mac_rrc_dl_handler.c
+index 2ff4c729ff..8b5c78e407 100644
+--- a/openair2/LAYER2/NR_MAC_gNB/nrdc_mac_rrc_dl_handler.c
++++ b/openair2/LAYER2/NR_MAC_gNB/nrdc_mac_rrc_dl_handler.c
+@@ -10,6 +10,9 @@
+ #include "mac_rrc_dl_handler.h"
+ #include "openair2/F1AP/f1ap_ids.h"
+ #include "openair2/F1AP/lib/f1ap_ue_context.h"
++#include "openair2/F1AP/f1ap_common.h"
++#include "openair2/LAYER2/nr_rlc/nr_rlc_oai_api.h"
++#include "openair3/ocp-gtpu/gtp_itf.h"
+ 
+ static NR_UE_info_t *nrdc_create_new_UE(gNB_MAC_INST *mac, uint32_t cu_id, const NR_CG_ConfigInfo_t *cgci)
+ {
+@@ -46,6 +49,8 @@ static NR_UE_info_t *nrdc_create_new_UE(gNB_MAC_INST *mac, uint32_t cu_id, const
+   // have added
+   UE->CellGroup = cellGroupConfig;
+ 
++  UE->nrdc_mode = true;
++
+   if (!add_new_UE_RA(mac, UE)) {
+     delete_nr_ue_data(UE, &mac->UE_info.uid_allocator);
+     LOG_E(NR_MAC, "UE list full while creating new UE\n");
+@@ -58,7 +63,7 @@ static NR_UE_info_t *nrdc_create_new_UE(gNB_MAC_INST *mac, uint32_t cu_id, const
+ 
+ void nrdc_ue_context_setup_request(const f1ap_ue_context_setup_req_t *req)
+ {
+-  LOG_D(NR_MAC, "nrdc_ue_context_setup_request called!\n");
++  LOG_E(NR_MAC, "nrdc_ue_context_setup_request called!\n");
+ 
+   gNB_MAC_INST *mac = RC.nrmac[0];
+ 
+@@ -82,7 +87,11 @@ void nrdc_ue_context_setup_request(const f1ap_ue_context_setup_req_t *req)
+   if (req->drbs_len > 0)
+     resp.drbs_len = handle_ue_context_drbs_setup(UE, req->drbs_len, req->drbs, &resp.drbs, new_CellGroup, &mac->rlc_config);
+ 
+-  UE->reconfigCellGroup = new_CellGroup;
++  /* in other parts of the code, we have: UE->reconfigCellGroup = new_CellGroup;
++   * but doing so crashes the DU, so let's do UE->CellGroup = new_CellGroup;
++   * (to be fixed?)
++   */
++  UE->CellGroup = new_CellGroup;
+   int ss_type =  NR_SearchSpace__searchSpaceType_PR_common;
+   NR_ServingCellConfigCommon_t *scc = mac->common_channels[0].ServingCellConfigCommon;
+   configure_UE_BWP(mac, scc, UE, true, ss_type, -1, -1);
+@@ -102,3 +111,88 @@ void nrdc_ue_context_setup_request(const f1ap_ue_context_setup_req_t *req)
+   free_ue_context_setup_resp(&resp);
+   ASN_STRUCT_FREE(asn_DEF_NR_CG_ConfigInfo, cg_configinfo);
+ }
++
++static instance_t get_f1_gtp_instance(void)
++{
++  const f1ap_cudu_inst_t *inst = getCxt(0);
++  if (!inst)
++    return -1; // means no F1
++  return inst->gtpInst;
++}
++
++void nrdc_ue_context_modification_request(const f1ap_ue_context_mod_req_t *req)
++{
++  /* this only works in F1 mode for the moment */
++  instance_t f1inst = get_f1_gtp_instance();
++  DevAssert(f1inst >= 0);
++
++  gNB_MAC_INST *mac = RC.nrmac[0];
++  f1ap_ue_context_mod_resp_t resp = {
++    .gNB_CU_ue_id = req->gNB_CU_ue_id,
++    .gNB_DU_ue_id = req->gNB_DU_ue_id,
++  };
++
++  NR_SCHED_LOCK(&mac->sched_lock);
++  NR_UE_info_t *UE = find_nr_UE(&RC.nrmac[0]->UE_info, req->gNB_DU_ue_id);
++  if (!UE) {
++    LOG_E(NR_MAC, "could not find UE with RNTI %04x\n", req->gNB_DU_ue_id);
++    NR_SCHED_UNLOCK(&mac->sched_lock);
++    return;
++  }
++
++  /* only support release of 1 drb */
++  if (req->srbs_len > 0 || req->drbs_len > 0 || req->rrc_container != NULL
++     || req->cu_to_du_rrc_info != NULL) {
++    LOG_E(NR_MAC, "NR-DC UE Context Modification Request contains unhandled fields, ignoring\n");
++    NR_SCHED_UNLOCK(&mac->sched_lock);
++    return;
++  }
++
++  if (req->drbs_rel_len != 1) {
++    LOG_E(NR_MAC, "NR-DC UE Context Modification Request contains wrong number of drbs to release (%d, expecting 1), ignoring\n", req->drbs_rel_len);
++    NR_SCHED_UNLOCK(&mac->sched_lock);
++    return;
++  }
++
++  int drb_id = req->drbs_rel[0].id;
++  int lcid = get_lcid_from_drbid(drb_id);
++
++  /* remove the bearer everywhere it has to */
++  nr_mac_remove_lcid(&UE->UE_sched_ctrl, lcid);
++  nr_rlc_release_entity(UE->rnti, lcid);
++  newGtpuDeleteOneTunnel(f1inst, UE->rnti, drb_id);
++
++  /* remove the RLC from UE->CellGroup->rlc_BearerToAddModList */
++  NR_CellGroupConfig_t *cellGroupConfig = UE->CellGroup;
++  int idx = 0;
++  while (idx < cellGroupConfig->rlc_BearerToAddModList->list.count) {
++    const NR_RLC_BearerConfig_t *bc = cellGroupConfig->rlc_BearerToAddModList->list.array[idx];
++    if (bc->logicalChannelIdentity == lcid)
++      break;
++    idx++;
++  }
++  if (idx < cellGroupConfig->rlc_BearerToAddModList->list.count)
++    asn_sequence_del(&cellGroupConfig->rlc_BearerToAddModList->list, idx, 1);
++
++  /* generate Context Modification Response */
++  NR_CellGroupConfig_t cell_group = {
++    .cellGroupId = 1,
++    .rlc_BearerToReleaseList = &(struct NR_CellGroupConfig__rlc_BearerToReleaseList) {
++      .list = {
++        .array = (NR_LogicalChannelIdentity_t *[]) {
++          &(NR_LogicalChannelIdentity_t) { lcid }
++        },
++        .count = 1
++      }
++    }
++  };
++
++  resp.du_to_cu_rrc_info = calloc_or_fail(1, sizeof(du_to_cu_rrc_information_t));
++  resp.du_to_cu_rrc_info->cell_group_config = encode_cellgroup_config(&cell_group);
++
++  NR_SCHED_UNLOCK(&mac->sched_lock);
++
++  mac->mac_rrc.ue_context_modification_response(&resp);
++
++  free_ue_context_mod_resp(&resp);
++}
+diff --git a/openair2/LAYER2/NR_MAC_gNB/nrdc_mac_rrc_dl_handler.h b/openair2/LAYER2/NR_MAC_gNB/nrdc_mac_rrc_dl_handler.h
+index 7810b902f9..55c8c353fa 100644
+--- a/openair2/LAYER2/NR_MAC_gNB/nrdc_mac_rrc_dl_handler.h
++++ b/openair2/LAYER2/NR_MAC_gNB/nrdc_mac_rrc_dl_handler.h
+@@ -8,5 +8,6 @@
+ #include "f1ap_messages_types.h"
+ 
+ void nrdc_ue_context_setup_request(const f1ap_ue_context_setup_req_t *req);
++void nrdc_ue_context_modification_request(const f1ap_ue_context_mod_req_t *req);
+ 
+ #endif /* NRDC_MAC_RRC_DL_HANDLER_H */
+diff --git a/openair2/RRC/NR/rrc_gNB.c b/openair2/RRC/NR/rrc_gNB.c
+index df965cb4d2..7d6ededea1 100644
+--- a/openair2/RRC/NR/rrc_gNB.c
++++ b/openair2/RRC/NR/rrc_gNB.c
+@@ -3427,6 +3427,7 @@ static void handle_rrcReconfigurationComplete(gNB_RRC_INST *rrc, gNB_RRC_UE_t *U
+       break;
+     case RRC_F1_NRDC_IN_PROGRESS:
+       rrc_gnb_nrdc_rrc_reconfiguration_complete_received(rrc, UE, xid);
++      reset_delayed_action(&UE->delayed_action);
+       break;
+     default:
+       LOG_E(RRC, "UE %d: Received unexpected transaction type %d for xid %d\n", UE->rrc_ue_id, UE->xids[xid], xid);
+@@ -4063,6 +4064,9 @@ static void rrc_CU_process_ue_context_modification_response(MessageDef *msg_p, i
+   }
+   gNB_RRC_UE_t *UE = &ue_context_p->ue_context;
+ 
++  if (UE->nrdc && rrc_gnb_nrdc_wait_for_f1_context_modification_response(UE))
++    return nrdc_rrc_CU_process_ue_context_modification_response(UE, rrc, resp);
++
+   bool is_inter_cu_ho = UE->ho_context && UE->ho_context->source && !UE->ho_context->target;
+   if (resp->drbs_len > 0) { // DRB to setup
+     store_du_f1u_tunnel(resp->drbs, resp->drbs_len, UE);
+@@ -4190,15 +4194,10 @@ unsigned int mask_flip(unsigned int x) {
+   return((((x>>8) + (x<<8))&0xffff)>>6);
+ }
+ 
+-<<<<<<< HEAD
+-/* \bref return F1AP QoS characteristics based on Qos flow parameters */
+-f1ap_qos_flow_param_t get_qos_char_from_qos_flow_param(const pdusession_level_qos_parameter_t *qos_param)
+-=======
+ /** @brief Get F1AP QoS flow parameters from PDU session QoS parameters
+  * @param qos_param PDU session level QoS parameters from NGAP
+  * @return F1AP QoS flow parameters */
+ f1ap_qos_flow_param_t nr_rrc_get_f1_qos_flow_param(const pdusession_level_qos_parameter_t *qos_param)
+->>>>>>> c0848905c8 (NR-DC: CU sends F1 UE Context Setup Request)
+ {
+   f1ap_qos_flow_param_t qos_char = {0};
+   if (qos_param->fiveQI_type == DYNAMIC) {
+@@ -4336,6 +4335,89 @@ static int fill_drb_to_be_setup_from_e1_resp(const gNB_RRC_INST *rrc,
+   return nb_drb;
+ }
+ 
++/** @brief Common helper to send F1 UE Context Modification Request with DRBs to setup
++ * This function handles the common logic for both setup and modify flows */
++static void rrc_send_f1_ue_context_modification_request(const gNB_RRC_INST *rrc,
++                                                        gNB_RRC_UE_t *ue_p,
++                                                        int n_drbs,
++                                                        f1ap_drb_to_setup_t *drbs,
++                                                        int n_rel_drbs,
++                                                        f1ap_drb_to_release_t *rel_drbs)
++{
++  DevAssert(rrc);
++  DevAssert(ue_p);
++  DevAssert(n_drbs > 0 || n_rel_drbs > 0);
++  AssertFatal(ue_p->f1_ue_context_active, "logic error: calling ue context modification when context not established\n");
++  AssertFatal(ue_p->Srb[1].Active && ue_p->Srb[2].Active, "SRBs should already be active\n");
++  AssertFatal(!NODE_IS_DU(rrc->node_type), "illegal node type DU!\n");
++
++  f1_ue_data_t ue_data = cu_get_f1_ue_data(ue_p->rrc_ue_id);
++  RETURN_IF_INVALID_ASSOC_ID(ue_data.du_assoc_id);
++
++  /* check if one of the bearers to remove is the NR-DC one, remove it if yes */
++  if (n_rel_drbs) {
++    int nrdc_bearer_index;
++    for (nrdc_bearer_index = 0; nrdc_bearer_index < n_rel_drbs; nrdc_bearer_index++) {
++      if (is_nrdc_bearer(ue_p, rel_drbs[nrdc_bearer_index].id)) {
++        nrdc_release_bearer(rrc, ue_p, rel_drbs[nrdc_bearer_index].id);
++        break;
++      }
++    }
++
++    if (nrdc_bearer_index != n_rel_drbs) {
++      /* nrdc bearer was removed, do not remove it again */
++      n_rel_drbs--;
++      /* do nothing else if no add/rel to do */
++      if (!n_rel_drbs && !n_drbs)
++        return;
++      memcpy(&rel_drbs[nrdc_bearer_index], &rel_drbs[nrdc_bearer_index + 1],
++             sizeof(int) * n_rel_drbs - nrdc_bearer_index);
++    }
++  }
++
++  f1ap_ue_context_mod_req_t req = {
++      .gNB_CU_ue_id = ue_p->rrc_ue_id,
++      .gNB_DU_ue_id = ue_data.secondary_ue,
++      .servCellIndex = RRC_PCELL_INDEX,
++  };
++
++  if (n_drbs > 0) {
++    req.drbs = calloc_or_fail(n_drbs, sizeof(*req.drbs));
++    memcpy(req.drbs, drbs, n_drbs * sizeof(*req.drbs));
++    req.drbs_len = n_drbs;
++    if (ue_p->ue_cap_buffer.len > 0) {
++      req.cu_to_du_rrc_info = calloc_or_fail(1, sizeof(*req.cu_to_du_rrc_info));
++      req.cu_to_du_rrc_info->ue_cap = calloc_or_fail(1, sizeof(*req.cu_to_du_rrc_info->ue_cap));
++      *req.cu_to_du_rrc_info->ue_cap = copy_byte_array(ue_p->ue_cap_buffer);
++    }
++  }
++
++  if (n_rel_drbs > 0) {
++    req.drbs_rel = calloc_or_fail(n_rel_drbs, sizeof(*req.drbs_rel));
++    memcpy(req.drbs_rel, rel_drbs, n_rel_drbs * sizeof(*req.drbs_rel));
++    req.drbs_rel_len = n_rel_drbs;
++  }
++
++  req.plmn = malloc_or_fail(sizeof(*req.plmn));
++  *req.plmn = rrc->configuration.plmn[0];
++  nr_rrc_cell_container_t *cell = rrc_get_pcell_for_ue((gNB_RRC_INST *)rrc, ue_p);
++  DevAssert(cell != NULL);
++  req.nr_cellid = malloc_or_fail(sizeof(*req.nr_cellid));
++  *req.nr_cellid = cell->info.cell_id;
++
++  // Request CellGroupConfig from DU in the response
++  req.gNB_DU_Configuration_Query = calloc_or_fail(1, sizeof(*req.gNB_DU_Configuration_Query));
++  *req.gNB_DU_Configuration_Query = true;
++
++  rrc->mac_rrc.ue_context_modification_request(ue_data.du_assoc_id, &req);
++  free_ue_context_mod_req(&req);
++  LOG_I(NR_RRC,
++        "UE %d trigger UE Context Modification Request (DRBs to setup: %d, DRBs to release: %d)\n",
++        ue_p->rrc_ue_id,
++        n_drbs,
++        n_rel_drbs);
++}
++
+ /**
+  * @brief E1AP Bearer Context Setup Response processing on CU-CP
+ */
+diff --git a/openair2/RRC/NR/rrc_gNB_nrdc.c b/openair2/RRC/NR/rrc_gNB_nrdc.c
+index 2827c90289..e3ff12a198 100644
+--- a/openair2/RRC/NR/rrc_gNB_nrdc.c
++++ b/openair2/RRC/NR/rrc_gNB_nrdc.c
+@@ -15,6 +15,7 @@
+ #include "common/utils/time_manager/time_timer.h"
+ #include "openair2/F1AP/lib/f1ap_ue_context.h"
+ #include "openair2/F1AP/f1ap_ids.h"
++#include "openair2/RRC/NR/rrc_gNB_NGAP.h"
+ 
+ typedef enum {
+   NRDC_NONE,
+@@ -23,7 +24,9 @@ typedef enum {
+   ACTIVATE_NRDC_WAIT_FOR_SCG_MEASUREMENT,
+   ACTIVATE_NRDC_WAIT_FOR_F1_CONTEXT_SETUP_RESPONSE,
+   ACTIVATE_NRDC_WAIT_FOR_ACTIVATION_RECONFIGURATION_COMPLETE,
+-  NRDC_ACTIVE
++  NRDC_ACTIVE,
++  DEACTIVATE_NRDC_WAIT_FOR_F1_CONTEXT_MODIFICATION_RESPONSE,
++  DEACTIVATE_NRDC_WAIT_FOR_PDU_SESSION_RELEASE_RECONFIGURATION_COMPLETE,
+ } nrdc_state_t;
+ 
+ typedef struct {
+@@ -36,6 +39,8 @@ typedef struct {
+   int report_config_id;
+   int measurement_id;
+   uint32_t secondary_du_ue_id;
++  int drb_id;
++  int pdu_session_to_release;
+ } nrdc_ue_state_t;
+ 
+ static int generate_ue_capability_enquiry(uint8_t *out, int outsize, int xid, int mcg_band, int scg_band)
+@@ -459,8 +464,8 @@ void rrc_gnb_nrdc_ue_capabilities_received(gNB_RRC_INST *rrc, gNB_RRC_UE_t *ue,
+                                    (uint64_t []){ ue->rrc_ue_id, xid, nrdc->state }, 3);
+ }
+ 
+-/* this function is called both for ack of A4 measurement setting
+- * and secondary cell group addition
++/* this function is called for ack of A4 measurement setting
++ * secondary cell group addition, PDU session release
+  */
+ void rrc_gnb_nrdc_rrc_reconfiguration_complete_received(gNB_RRC_INST *rrc, gNB_RRC_UE_t *ue, int xid)
+ {
+@@ -473,21 +478,23 @@ void rrc_gnb_nrdc_rrc_reconfiguration_complete_received(gNB_RRC_INST *rrc, gNB_R
+   }
+ 
+   if (nrdc->state != ACTIVATE_NRDC_WAIT_FOR_A4_RECONFIGURATION_COMPLETE
+-      && nrdc->state != ACTIVATE_NRDC_WAIT_FOR_ACTIVATION_RECONFIGURATION_COMPLETE) {
++      && nrdc->state != ACTIVATE_NRDC_WAIT_FOR_ACTIVATION_RECONFIGURATION_COMPLETE
++      && nrdc->state != DEACTIVATE_NRDC_WAIT_FOR_PDU_SESSION_RELEASE_RECONFIGURATION_COMPLETE) {
+     LOG_W(NR_RRC, "ignore unexpected NR-DC RRC Reconfiguration received for ue %d\n", ue->rrc_ue_id);
+     return;
+   }
+ 
+   if (xid != nrdc->xid) {
+-    LOG_W(NR_RRC, "ignore wrong NR-DC procedure for ue %d\n", ue->rrc_ue_id);
++    LOG_W(NR_RRC, "ignore wrong NR-DC procedure for ue %d (received %d expected %d)\n", ue->rrc_ue_id, xid, nrdc->xid);
+     return;
+   }
+ 
+-  /* stop the timer */
+-  tick_timeout_stop(nrdc->timer);
++  /* stop the timer if any */
++  if (nrdc->timer)
++    tick_timeout_stop(nrdc->timer);
+   nrdc->timer = 0;
+ 
+-  ue->xids[nrdc->xid] = RRC_ACTION_NONE;
++  ue->xids[xid] = RRC_ACTION_NONE;
+   nrdc->xid = -1;
+ 
+   if (nrdc->state == ACTIVATE_NRDC_WAIT_FOR_A4_RECONFIGURATION_COMPLETE) {
+@@ -499,6 +506,21 @@ void rrc_gnb_nrdc_rrc_reconfiguration_complete_received(gNB_RRC_INST *rrc, gNB_R
+     return;
+   }
+ 
++  if (nrdc->state == DEACTIVATE_NRDC_WAIT_FOR_PDU_SESSION_RELEASE_RECONFIGURATION_COMPLETE) {
++    /* set the xid of the pdu session */
++    /* todo: remove this 'xid' for pdu session structure, it makes no sense at all */
++    FOR_EACH_SEQ_ARR(rrc_pdu_session_param_t *, session, &ue->pduSessions) {
++      if (session->param.pdusession_id == nrdc->pdu_session_to_release) {
++        session->xid = xid;
++      }
++    }
++    rrc_gNB_send_NGAP_PDUSESSION_RELEASE_RESPONSE(rrc, ue, xid);
++    LOG_I(NR_RRC, "ue %d: NR-DC PDU session is removed\n", ue->rrc_ue_id);
++    free(ue->nrdc);
++    ue->nrdc = NULL;
++    return;
++  }
++
+   /* Reconfiguration Complete for activation is received, NR-DC is now active */
+   nrdc->state = NRDC_ACTIVE;
+   LOG_I(NR_RRC, "ue %d: NR-DC is now active\n", ue->rrc_ue_id);
+@@ -553,6 +575,7 @@ void rrc_gnb_nrdc_measurement_received(gNB_RRC_INST *rrc, gNB_RRC_UE_t *ue, NR_M
+   AssertFatal(pdu != NULL, "no PDU session for DRB ID %d\n", rrc_drb->drb_id);
+ 
+   drb->id = rrc_drb->drb_id;
++  nrdc->drb_id = rrc_drb->drb_id;
+ 
+   drb->qos_choice = F1AP_QOS_CHOICE_NR;
+   drb->nr.nssai = pdu->param.nssai;
+@@ -857,7 +880,7 @@ void nrdc_rrc_CU_process_ue_context_setup_response(gNB_RRC_UE_t *ue, gNB_RRC_INS
+                         .list = {
+                           .array = (struct NR_DRB_ToAddMod *[]) {
+                             &(struct NR_DRB_ToAddMod) {
+-                              .drb_Identity = (NR_DRB_Identity_t) 1,
++                              .drb_Identity = (NR_DRB_Identity_t) nrdc->drb_id,
+                               .recoverPDCP = &(long) {
+                                 NR_DRB_ToAddMod__recoverPDCP_true
+                               }
+@@ -926,4 +949,159 @@ void nrdc_rrc_CU_process_ue_context_setup_response(gNB_RRC_UE_t *ue, gNB_RRC_INS
+ 
+   /* no need for a timer */
+   nrdc->state = ACTIVATE_NRDC_WAIT_FOR_ACTIVATION_RECONFIGURATION_COMPLETE;
++  nrdc->xid = xid;
++}
++
++bool is_nrdc_bearer(gNB_RRC_UE_t *ue, int rb_id)
++{
++  if (ue->nrdc == NULL)
++    return false;
++
++  nrdc_ue_state_t *nrdc = ue->nrdc;
++
++  return nrdc->drb_id == rb_id;
++}
++
++void nrdc_release_bearer(const gNB_RRC_INST *rrc, gNB_RRC_UE_t *ue, int bearer_id)
++{
++  if (ue->nrdc == NULL)
++    return;
++  nrdc_ue_state_t *nrdc = ue->nrdc;
++
++  /* we must be in state NRDC_ACTIVE to release the bearer */
++  DevAssert(nrdc->state == NRDC_ACTIVE);
++
++  /* check that it's the right bearer, do nothing if not */
++  if (nrdc->drb_id != bearer_id) {
++    LOG_E(NR_RRC, "wrong NR-DC bearer released (expected %d, requested %d), do nothing\n", nrdc->drb_id, bearer_id);
++    return;
++  }
++
++  /* find the PDU session associated to this bearer and remember it to
++   * release it properly later (after RRC Reconfiguration)
++   */
++  drb_t *drb = get_drb(&ue->drbs, nrdc->drb_id);
++  int pdu_session_id = drb->pdusession_id;
++  nrdc->pdu_session_to_release = pdu_session_id;
++
++  f1ap_ue_context_mod_req_t req = {
++      .gNB_CU_ue_id = ue->rrc_ue_id,
++      .gNB_DU_ue_id = nrdc->secondary_du_ue_id,
++      .servCellIndex = RRC_PCELL_INDEX,
++  };
++  req.plmn = malloc_or_fail(sizeof(*req.plmn));
++  *req.plmn = rrc->configuration.plmn[0];
++  /* hack: gcc warning because of const, remove warning by explicit cast */
++  gNB_RRC_INST *rrc_no_const = (gNB_RRC_INST *)rrc;
++  nr_rrc_cell_container_t *cell = get_cell_by_band(&rrc_no_const->cells, nrdc->scg_band);
++  DevAssert(cell != NULL);
++  req.nr_cellid = malloc_or_fail(sizeof(*req.nr_cellid));
++  *req.nr_cellid = cell->info.cell_id;
++  req.drbs_rel = malloc_or_fail(sizeof(*req.drbs_rel));
++  req.drbs_rel_len = 1;
++  req.drbs_rel[0].id = nrdc->drb_id;
++
++  /* request CellGroupConfig from SCG DU in the response */
++  req.gNB_DU_Configuration_Query = calloc_or_fail(1, sizeof(*req.gNB_DU_Configuration_Query));
++  *req.gNB_DU_Configuration_Query = true;
++
++  /* send UE Context Modification to SCG DU */
++  rrc->mac_rrc.ue_context_modification_request(cell->assoc_id, &req);
++  LOG_I(NR_RRC, "NR-DC: UE %d: F1 Release DRB (%d)\n", ue->rrc_ue_id, nrdc->drb_id);
++  free_ue_context_mod_req(&req);
++
++  nrdc->state = DEACTIVATE_NRDC_WAIT_FOR_F1_CONTEXT_MODIFICATION_RESPONSE;
++}
++
++bool rrc_gnb_nrdc_wait_for_f1_context_modification_response(gNB_RRC_UE_t *ue)
++{
++  if (!ue->nrdc)
++    return false;
++  nrdc_ue_state_t *nrdc = ue->nrdc;
++  return nrdc->state == DEACTIVATE_NRDC_WAIT_FOR_F1_CONTEXT_MODIFICATION_RESPONSE;
++}
++
++void nrdc_rrc_CU_process_ue_context_modification_response(gNB_RRC_UE_t *ue, gNB_RRC_INST *rrc, f1ap_ue_context_mod_resp_t *resp)
++{
++  LOG_D(NR_RRC, "nrdc_rrc_CU_process_ue_context_modification_response called\n");
++
++  /* only works for deactivation, where we need du_to_cu_rrc_info, but no drbs and no srbs to setup */
++  if (resp->drbs_len || resp->srbs_len || resp->du_to_cu_rrc_info == NULL
++      || resp->du_to_cu_rrc_info->cell_group_config.buf == NULL
++      || resp->du_to_cu_rrc_info->cell_group_config.len == 0) {
++    LOG_E(NR_RRC, "NR-DC ignore bad UE Context Modification Response\n");
++    return;
++  }
++
++  DevAssert(ue->nas_pdu.buf && ue->nas_pdu.len);
++
++  nrdc_ue_state_t *nrdc = ue->nrdc;
++  if (!nrdc) {
++    LOG_E(NR_RRC, "no NR-DC found for ue %d, ignore ContextModificationResponse\n", ue->rrc_ue_id);
++    return;
++  }
++
++  DevAssert(nrdc->state == DEACTIVATE_NRDC_WAIT_FOR_F1_CONTEXT_MODIFICATION_RESPONSE);
++
++  int xid = rrc_gNB_get_next_transaction_identifier(rrc->module_id);
++  nrdc->xid = xid;
++  ue->xids[xid] = RRC_F1_NRDC_IN_PROGRESS;
++
++  NR_DL_DCCH_Message_t dl_dcch_msg = {
++    .message = {
++      .present = NR_DL_DCCH_MessageType_PR_c1,
++      .choice = { .c1 = &(struct NR_DL_DCCH_MessageType__c1) {
++          .present = NR_DL_DCCH_MessageType__c1_PR_rrcReconfiguration,
++          .choice = {
++            .rrcReconfiguration = &(struct NR_RRCReconfiguration) {
++              .rrc_TransactionIdentifier = xid,
++              .criticalExtensions = {
++                .present = NR_RRCReconfiguration__criticalExtensions_PR_rrcReconfiguration,
++                .choice = {
++                  .rrcReconfiguration = &(struct NR_RRCReconfiguration_IEs) {
++                    .nonCriticalExtension = &(struct NR_RRCReconfiguration_v1530_IEs) {
++                      .dedicatedNAS_MessageList = &(struct NR_RRCReconfiguration_v1530_IEs__dedicatedNAS_MessageList) {
++                        .list = {
++                          .array = (NR_DedicatedNAS_Message_t *[]) {
++                            &(NR_DedicatedNAS_Message_t) {
++                              .buf = ue->nas_pdu.buf,
++                              .size = ue->nas_pdu.len
++                            }
++                          },
++                          .count = 1
++                        }
++                      }
++                    }
++                  }
++                }
++              }
++            }
++          }
++        }
++      }
++    }
++  };
++
++  /* encode and send */
++  unsigned char *buf = 0;
++
++  int len = uper_encode_to_new_buffer(&asn_DEF_NR_DL_DCCH_Message, NULL, &dl_dcch_msg, (void **)&buf);
++  if (len <= 0) {
++    AssertFatal(len > 0, "Failed to encode DL-DCCH message\n");
++    LOG_E(NR_RRC, "NR-DC Failed to encode DL-DCCH message\n");
++    return;
++  }
++
++  /* free the nas_pdu */
++  free(ue->nas_pdu.buf);
++  ue->nas_pdu.buf = NULL;
++  ue->nas_pdu.len = 0;
++
++  const uint32_t msg_id = NR_DL_DCCH_MessageType__c1_PR_rrcReconfiguration;
++  nr_rrc_transfer_protected_rrc_message(rrc, ue, DL_SCH_LCID_DCCH, msg_id, buf, len);
++
++  free(buf);
++
++  nrdc->state = DEACTIVATE_NRDC_WAIT_FOR_PDU_SESSION_RELEASE_RECONFIGURATION_COMPLETE;
++  nrdc->drb_id = -1;
+ }
+diff --git a/openair2/RRC/NR/rrc_gNB_nrdc.h b/openair2/RRC/NR/rrc_gNB_nrdc.h
+index 0f4decdae4..c296943df5 100644
+--- a/openair2/RRC/NR/rrc_gNB_nrdc.h
++++ b/openair2/RRC/NR/rrc_gNB_nrdc.h
+@@ -20,4 +20,10 @@ int get_scg_measurement_id(gNB_RRC_UE_t *ue);
+ bool rrc_gnb_nrdc_wait_for_f1_context_setup_response(gNB_RRC_UE_t *ue);
+ void nrdc_rrc_CU_process_ue_context_setup_response(gNB_RRC_UE_t *ue, gNB_RRC_INST *rrc, f1ap_ue_context_setup_resp_t *resp);
+ 
++bool is_nrdc_bearer(gNB_RRC_UE_t *ue, int rb_id);
++void nrdc_release_bearer(const gNB_RRC_INST *rrc, gNB_RRC_UE_t *ue, int bearer_id);
++
++bool rrc_gnb_nrdc_wait_for_f1_context_modification_response(gNB_RRC_UE_t *ue);
++void nrdc_rrc_CU_process_ue_context_modification_response(gNB_RRC_UE_t *ue, gNB_RRC_INST *rrc, f1ap_ue_context_mod_resp_t *resp);
++
+ #endif /* __RRC_GNB_NRDC_H__ */
+-- 
+2.48.1
+

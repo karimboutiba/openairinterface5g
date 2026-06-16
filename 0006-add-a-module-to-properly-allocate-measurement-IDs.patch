@@ -1,0 +1,404 @@
+From a6024fa011979d6a31d8e9a3406b36305e276dcb Mon Sep 17 00:00:00 2001
+From: Cedric Roux <cedric.roux@eurecom.fr>
+Date: Tue, 6 Jan 2026 12:18:55 +0100
+Subject: [PATCH 06/21] add a module to properly allocate measurement IDs
+
+Signed-off-by: Cedric Roux <cedric.roux@eurecom.fr>
+---
+ CMakeLists.txt                         |  4 +-
+ openair2/RRC/NR/MESSAGES/asn1_msg.c    | 37 +++++++++-----
+ openair2/RRC/NR/MESSAGES/asn1_msg.h    |  5 +-
+ openair2/RRC/NR/nr_rrc_defs.h          |  5 ++
+ openair2/RRC/NR/nr_rrc_proto.h         |  2 +-
+ openair2/RRC/NR/rrc_gNB.c              | 35 ++++++++-----
+ openair2/RRC/NR/rrc_gNB_measurements.c | 69 ++++++++++++++++++++++++++
+ openair2/RRC/NR/rrc_gNB_measurements.h | 23 +++++++++
+ 8 files changed, 152 insertions(+), 28 deletions(-)
+ create mode 100644 openair2/RRC/NR/rrc_gNB_measurements.c
+ create mode 100644 openair2/RRC/NR/rrc_gNB_measurements.h
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index cc8f5a9261..ba9551bca2 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -377,7 +377,9 @@ target_link_libraries(lte_rrc PRIVATE nr_rrc)
+ 
+ #NR RRC
+ #######
+-add_library(nr_rrc ${OPENAIR2_DIR}/RRC/NR/MESSAGES/asn1_msg.c)
++add_library(nr_rrc
++    ${OPENAIR2_DIR}/RRC/NR/MESSAGES/asn1_msg.c
++    ${OPENAIR2_DIR}/RRC/NR/rrc_gNB_measurements.c)
+ target_link_libraries(nr_rrc PUBLIC asn1_nr_rrc asn1_lte_rrc rrc_cell_management)
+ 
+ # S1AP
+diff --git a/openair2/RRC/NR/MESSAGES/asn1_msg.c b/openair2/RRC/NR/MESSAGES/asn1_msg.c
+index 7e09ae0b9a..552acf25a9 100644
+--- a/openair2/RRC/NR/MESSAGES/asn1_msg.c
++++ b/openair2/RRC/NR/MESSAGES/asn1_msg.c
+@@ -25,6 +25,7 @@
+ #include "asn1_msg.h"
+ #include "../nr_rrc_proto.h"
+ #include "LAYER2/nr_pdcp/nr_pdcp_asn1_utils.h"
++#include "openair2/RRC/NR/rrc_gNB_measurements.h"
+ 
+ #include "openair3/SECU/key_nas_deriver.h"
+ 
+@@ -1186,7 +1187,8 @@ static NR_MeasIdToAddMod_t *get_MeasId(NR_MeasId_t measId, NR_ReportConfigId_t r
+   return measid;
+ }
+ 
+-NR_MeasConfig_t *get_MeasConfig(const NR_MeasTiming_t *mt,
++NR_MeasConfig_t *get_MeasConfig(gNB_RRC_UE_t *ue,
++                                const NR_MeasTiming_t *mt,
+                                 int band,
+                                 int nr_pci,
+                                 NR_ReportConfigToAddMod_t *rc_PER,
+@@ -1230,7 +1232,8 @@ NR_MeasConfig_t *get_MeasConfig(const NR_MeasTiming_t *mt,
+   // cell-specific offsets, blacklisted cells to be ignored and whitelisted cells to consider for measurements.
+ 
+   // Serving cell
+-  NR_MeasObjectToAddMod_t *mo1 = get_MeasObject(ft, band, ft->carrierFreq, 1);
++  int serving_cell_measobj_id = allocate_measurement_object_id(ue);
++  NR_MeasObjectToAddMod_t *mo1 = get_MeasObject(ft, band, ft->carrierFreq, serving_cell_measobj_id);
+   NR_MeasObjectNR_t *monr1 = mo1->measObject.choice.measObjectNR;
+   monr1->cellsToAddModList = calloc_or_fail(1, sizeof(*monr1->cellsToAddModList));
+   NR_CellsToAddMod_t *cell = calloc_or_fail(1, sizeof(*cell));
+@@ -1238,10 +1241,16 @@ NR_MeasConfig_t *get_MeasConfig(const NR_MeasTiming_t *mt,
+   ASN_SEQUENCE_ADD(&monr1->cellsToAddModList->list, cell);
+   asn1cSeqAdd(&mc->measObjectToAddModList->list, mo1);
+ 
++  int *neighbour_measurement_object_id = NULL;
++  if (neigh_seq && neigh_seq->size)
++    neighbour_measurement_object_id = calloc_or_fail(neigh_seq->size, sizeof(int));
++
+   // Neighbour cells
+   if (neigh_seq) {
+-    int mo_id = 2;
++    int i = 0;
+     FOR_EACH_SEQ_ARR(nr_neighbour_cell_t *, neigh_cell, neigh_seq) {
++      int mo_id = allocate_measurement_object_id(ue);
++      neighbour_measurement_object_id[i] = mo_id;
+       NR_MeasObjectToAddMod_t *mo_neighbour = get_MeasObject(ft,  neigh_cell->band, neigh_cell->absoluteFrequencySSB, mo_id);
+       NR_MeasObjectNR_t *monr = mo_neighbour->measObject.choice.measObjectNR;
+       monr->cellsToAddModList = calloc_or_fail(1, sizeof(*monr->cellsToAddModList));
+@@ -1249,7 +1258,7 @@ NR_MeasConfig_t *get_MeasConfig(const NR_MeasTiming_t *mt,
+       cell->physCellId = neigh_cell->physicalCellId;
+       ASN_SEQUENCE_ADD(&monr->cellsToAddModList->list, cell);
+       asn1cSeqAdd(&mc->measObjectToAddModList->list, mo_neighbour);
+-      mo_id++;
++      i++;
+     }
+   }
+ 
+@@ -1259,19 +1268,20 @@ NR_MeasConfig_t *get_MeasConfig(const NR_MeasTiming_t *mt,
+   // object.
+ 
+   // MeasId for Periodic report
+-  int meas_idx = 0;
+   if (rc_PER) {
+-    for (; meas_idx < mc->measObjectToAddModList->list.count; meas_idx++) {
+-      const NR_MeasObjectId_t measObjectId = mc->measObjectToAddModList->list.array[meas_idx]->measObjectId;
+-      NR_MeasIdToAddMod_t *measid = get_MeasId(meas_idx + 1, rc_PER->reportConfigId, measObjectId);
++    for (int i = 0; i < mc->measObjectToAddModList->list.count; i++) {
++      const NR_MeasObjectId_t measObjectId = mc->measObjectToAddModList->list.array[i]->measObjectId;
++      int meas_idx = allocate_measurement_id(ue);
++      NR_MeasIdToAddMod_t *measid = get_MeasId(meas_idx, rc_PER->reportConfigId, measObjectId);
+       asn1cSeqAdd(&mc->measIdToAddModList->list, measid);
+     }
+   }
+ 
+   // MeasId for Event A2
+   if (rc_A2) {
+-    NR_MeasIdToAddMod_t *measid_A2 = get_MeasId(meas_idx + 1, rc_A2->reportConfigId, 1);
+-    meas_idx++;
++    int meas_idx = allocate_measurement_id(ue);
++    int meas_obj_id = serving_cell_measobj_id;
++    NR_MeasIdToAddMod_t *measid_A2 = get_MeasId(meas_idx, rc_A2->reportConfigId, meas_obj_id);
+     asn1cSeqAdd(&mc->measIdToAddModList->list, measid_A2);
+   }
+ 
+@@ -1283,8 +1293,9 @@ NR_MeasConfig_t *get_MeasConfig(const NR_MeasTiming_t *mt,
+       /* check that there is a A3 configured for this neighbour */
+       if (reportConfigId == -1)
+         continue;
+-      NR_MeasIdToAddMod_t *measid_A3 = get_MeasId(meas_idx + 1, reportConfigId, i + 2);
+-      meas_idx++;
++      int meas_idx = allocate_measurement_id(ue);
++      int meas_obj_id = neighbour_measurement_object_id[i];
++      NR_MeasIdToAddMod_t *measid_A3 = get_MeasId(meas_idx, reportConfigId, meas_obj_id);
+       asn1cSeqAdd(&mc->measIdToAddModList->list, measid_A3);
+       i++;
+     }
+@@ -1299,6 +1310,8 @@ NR_MeasConfig_t *get_MeasConfig(const NR_MeasTiming_t *mt,
+   asn1cCallocOne(qcnr->quantityConfigCell.csi_RS_FilterConfig.filterCoefficientRSRP, NR_FilterCoefficient_fc6);
+   asn1cSeqAdd(&mc->quantityConfig->quantityConfigNR_List->list, qcnr);
+ 
++  free(neighbour_measurement_object_id);
++
+   return mc;
+ }
+ 
+diff --git a/openair2/RRC/NR/MESSAGES/asn1_msg.h b/openair2/RRC/NR/MESSAGES/asn1_msg.h
+index 7aeb2b4ed0..99a7380ebc 100644
+--- a/openair2/RRC/NR/MESSAGES/asn1_msg.h
++++ b/openair2/RRC/NR/MESSAGES/asn1_msg.h
+@@ -138,7 +138,10 @@ int do_RRCReestablishment(int8_t nh_ncc, uint8_t *const buffer, size_t buffer_si
+ 
+ int do_RRCReestablishmentComplete(uint8_t *buffer, size_t buffer_size, int64_t rrc_TransactionIdentifier);
+ 
+-NR_MeasConfig_t *get_MeasConfig(const NR_MeasTiming_t *mt,
++#include "openair2/RRC/NR/nr_rrc_defs.h"
++
++NR_MeasConfig_t *get_MeasConfig(gNB_RRC_UE_t *ue,
++                                const NR_MeasTiming_t *mt,
+                                 int band,
+                                 int nr_pci,
+                                 NR_ReportConfigToAddMod_t *rc_PER,
+diff --git a/openair2/RRC/NR/nr_rrc_defs.h b/openair2/RRC/NR/nr_rrc_defs.h
+index 1078b9de15..49c53866de 100644
+--- a/openair2/RRC/NR/nr_rrc_defs.h
++++ b/openair2/RRC/NR/nr_rrc_defs.h
+@@ -261,6 +261,11 @@ typedef struct gNB_RRC_UE_s {
+   delayed_action_state_t delayed_action;
+ 
+   nr_redcap_ue_cap_t *redcap_cap;
++
++  /* measurement IDs */
++  uint64_t measurement_object_ids;       /* bitfield, 64 possible values */
++  uint64_t measurement_ids;              /* bitfield, 64 possible values */
++  uint64_t report_config_ids;            /* bitfield, 64 possible values */
+ } gNB_RRC_UE_t;
+ 
+ typedef struct rrc_gNB_ue_context_s {
+diff --git a/openair2/RRC/NR/nr_rrc_proto.h b/openair2/RRC/NR/nr_rrc_proto.h
+index ad69ab19df..698900a673 100644
+--- a/openair2/RRC/NR/nr_rrc_proto.h
++++ b/openair2/RRC/NR/nr_rrc_proto.h
+@@ -45,7 +45,7 @@ void *rrc_gnb_task(void *args_p);
+ 
+ int nr_rrc_reconfiguration_req(gNB_RRC_INST *rrc, gNB_RRC_UE_t *ue_p);
+ 
+-NR_MeasConfig_t *nr_rrc_get_measconfig(const gNB_RRC_INST *rrc, uint64_t nr_cellid);
++NR_MeasConfig_t *nr_rrc_get_measconfig(const gNB_RRC_INST *rrc, uint64_t nr_cellid, gNB_RRC_UE_t *ue);
+ 
+ bool ue_associated_to_cuup(const gNB_RRC_UE_t *ue);
+ sctp_assoc_t get_existing_cuup_for_ue(const gNB_RRC_UE_t *ue);
+diff --git a/openair2/RRC/NR/rrc_gNB.c b/openair2/RRC/NR/rrc_gNB.c
+index 5bd6c886d9..592fdfddda 100644
+--- a/openair2/RRC/NR/rrc_gNB.c
++++ b/openair2/RRC/NR/rrc_gNB.c
+@@ -81,6 +81,7 @@
+ #include "alg/find.h"
+ #include "NR_HandoverCommand.h"
+ #include "openair2/SDAP/nr_sdap/nr_sdap_configuration.h"
++#include "rrc_gNB_measurements.h"
+ 
+ #ifdef E2_AGENT
+ #include "openair2/E2AP/RAN_FUNCTION/O-RAN/ran_func_rc_extern.h"
+@@ -653,10 +654,10 @@ static nr_a3_event_t *get_a3_configuration(gNB_RRC_INST *rrc, int pci)
+   return NULL;
+ }
+ 
+-static NR_ReportConfigToAddMod_t *prepare_periodic_event_report(const nr_per_event_t *per_event)
++static NR_ReportConfigToAddMod_t *prepare_periodic_event_report(gNB_RRC_UE_t *ue, const nr_per_event_t *per_event)
+ {
+   NR_ReportConfigToAddMod_t *rc = calloc(1, sizeof(*rc));
+-  rc->reportConfigId = 1;
++  rc->reportConfigId = allocate_report_config_id(ue);
+   rc->reportConfig.present = NR_ReportConfigToAddMod__reportConfig_PR_reportConfigNR;
+ 
+   NR_PeriodicalReportConfig_t *prc = calloc(1, sizeof(*prc));
+@@ -682,10 +683,10 @@ static NR_ReportConfigToAddMod_t *prepare_periodic_event_report(const nr_per_eve
+   return rc;
+ }
+ 
+-static NR_ReportConfigToAddMod_t *prepare_a2_event_report(const nr_a2_event_t *a2_event)
++static NR_ReportConfigToAddMod_t *prepare_a2_event_report(gNB_RRC_UE_t *ue, const nr_a2_event_t *a2_event)
+ {
+   NR_ReportConfigToAddMod_t *rc_A2 = calloc(1, sizeof(*rc_A2));
+-  rc_A2->reportConfigId = 2;
++  rc_A2->reportConfigId = allocate_report_config_id(ue);
+   rc_A2->reportConfig.present = NR_ReportConfigToAddMod__reportConfig_PR_reportConfigNR;
+   NR_EventTriggerConfig_t *etrc_A2 = calloc(1, sizeof(*etrc_A2));
+   etrc_A2->eventId.present = NR_EventTriggerConfig__eventId_PR_eventA2;
+@@ -753,7 +754,7 @@ void free_RRCReconfiguration_params(nr_rrc_reconfig_param_t params)
+     FREE_AND_ZERO_BYTE_ARRAY(params.dedicated_NAS_msg_list[i]);
+ }
+ 
+-NR_MeasConfig_t *nr_rrc_get_measconfig(const gNB_RRC_INST *rrc, uint64_t nr_cellid)
++NR_MeasConfig_t *nr_rrc_get_measconfig(const gNB_RRC_INST *rrc, uint64_t nr_cellid, gNB_RRC_UE_t *ue)
+ {
+   nr_rrc_cell_container_t *cell = get_cell_by_cell_id(&((gNB_RRC_INST *)rrc)->cells, nr_cellid);
+   DevAssert(cell != NULL);
+@@ -795,7 +796,7 @@ NR_MeasConfig_t *nr_rrc_get_measconfig(const gNB_RRC_INST *rrc, uint64_t nr_cell
+           /* no A3 event configured for this neighbour, let's try the default one, if it exists */
+           if (default_a3_added) {
+             /* default A3 exists and is already added, use it for this neighbour */
+-            neigh_a3_id[i] = 3;
++            neigh_a3_id[i] = default_a3_report_config_id;
+             continue;
+           }
+           /* try to get the default A3 config */
+@@ -805,23 +806,31 @@ NR_MeasConfig_t *nr_rrc_get_measconfig(const gNB_RRC_INST *rrc, uint64_t nr_cell
+             neigh_a3_id[i] = -1;
+             continue;
+           }
++          /* allocated default A3 report config ID */
++          default_a3_report_config_id = allocate_report_config_id(ue);
++          neigh_a3_id[i] = default_a3_report_config_id;
+           default_a3_added = true;
+-          /* default A3 report config ID is 3 */
+-          neigh_a3_id[i] = 3;
+         } else {
+-          /* specific A3 report config ID are 4, 5, ... */
+-          neigh_a3_id[i] = i + 4;
++          /* allocate specific A3 report config ID */
++          neigh_a3_id[i] = allocate_report_config_id(ue);
+         }
+         NR_ReportConfigId_t reportConfigId = neigh_a3_id[i];
+         seq_arr_push_back(&rc_A3_seq, prepare_a3_event_report(a3Event, reportConfigId), sizeof(NR_ReportConfigToAddMod_t));
+       }
+     }
++<<<<<<< HEAD
+     if (rrc->measurementConfiguration.per_event)
+       rc_PER = prepare_periodic_event_report(rrc->measurementConfiguration.per_event);
+     if (rrc->measurementConfiguration.a2_event)
+       rc_A2 = prepare_a2_event_report(rrc->measurementConfiguration.a2_event);
++=======
++    if (meas_cfg->per_event)
++      rc_PER = prepare_periodic_event_report(ue, meas_cfg->per_event);
++    if (meas_cfg->a2_event)
++      rc_A2 = prepare_a2_event_report(ue, meas_cfg->a2_event);
++>>>>>>> 2fbc1d9035 (add a module to properly allocate measurement IDs)
+ 
+-    NR_MeasConfig_t *result = get_MeasConfig(mt, band, cell->info.pci, rc_PER, rc_A2, &rc_A3_seq, &neigh_seq, neigh_a3_id);
++    NR_MeasConfig_t *result = get_MeasConfig(ue, mt, band, cell->info.pci, rc_PER, rc_A2, &rc_A3_seq, &neigh_seq, neigh_a3_id);
+ 
+     // Clean up sequence arrays
+     seq_arr_free(&rc_A3_seq, NULL);
+@@ -1407,7 +1416,7 @@ static void rrc_handle_RRCSetupRequest(gNB_RRC_INST *rrc,
+     return;
+   }
+   UE->ongoing_reconfiguration = false;
+-  UE->measConfig = nr_rrc_get_measconfig(rrc, msg->nr_cellid);
++  UE->measConfig = nr_rrc_get_measconfig(rrc, msg->nr_cellid, UE);
+   activate_srb(UE, 1);
+   rrc_gNB_generate_RRCSetup(0, ue_context_p, msg->du2cu_rrc_container, msg->du2cu_rrc_container_length);
+ }
+@@ -5018,7 +5027,7 @@ void rrc_f1_ue_context_setup_for_target_du(const gNB_RRC_INST *rrc,
+ 
+   /* Update measurement config for target DU */
+   free_MeasConfig(ue->measConfig);
+-  ue->measConfig = nr_rrc_get_measconfig(rrc, cell->info.cell_id);
++  ue->measConfig = nr_rrc_get_measconfig(rrc, cell->info.cell_id, ue);
+   byte_array_t *meas_config = calloc_or_fail(1, sizeof(*meas_config));
+   meas_config->buf = calloc_or_fail(1, NR_RRC_BUF_SIZE);
+   meas_config->len = do_NR_MeasConfig(ue->measConfig, meas_config->buf, NR_RRC_BUF_SIZE);
+diff --git a/openair2/RRC/NR/rrc_gNB_measurements.c b/openair2/RRC/NR/rrc_gNB_measurements.c
+new file mode 100644
+index 0000000000..c937f52480
+--- /dev/null
++++ b/openair2/RRC/NR/rrc_gNB_measurements.c
+@@ -0,0 +1,69 @@
++/*
++ * SPDX-License-Identifier: LicenseRef-CSSL-1.0
++ */
++
++#include "rrc_gNB_measurements.h"
++#include "nr_rrc_defs.h"
++
++int allocate_measurement_object_id(void *_ue)
++{
++  gNB_RRC_UE_t *ue = _ue;
++  uint64_t mask = 1;
++  int ret;
++  for (ret = 0; ret < 64; ret++, mask <<= 1)
++    if (!(ue->measurement_object_ids & mask))
++      break;
++  DevAssert(ret < 64);
++  ue->measurement_object_ids |= mask;
++  return ret + 1;
++}
++
++void free_measurement_object_id(void *_ue, int mo_id)
++{
++  gNB_RRC_UE_t *ue = _ue;
++  uint64_t mask = (uint64_t)1 << (uint64_t)(mo_id - 1);
++  DevAssert(ue->measurement_object_ids & mask);
++  ue->measurement_object_ids &= ~mask;
++}
++
++int allocate_measurement_id(void *_ue)
++{
++  gNB_RRC_UE_t *ue = _ue;
++  uint64_t mask = 1;
++  int ret;
++  for (ret = 0; ret < 64; ret++, mask <<= 1)
++    if (!(ue->measurement_ids & mask))
++      break;
++  DevAssert(ret < 64);
++  ue->measurement_ids |= mask;
++  return ret + 1;
++}
++
++void free_measurement_id(void *_ue, int mo_id)
++{
++  gNB_RRC_UE_t *ue = _ue;
++  uint64_t mask = (uint64_t)1 << (uint64_t)(mo_id - 1);
++  DevAssert(ue->measurement_ids & mask);
++  ue->measurement_ids &= ~mask;
++}
++
++int allocate_report_config_id(void *_ue)
++{
++  gNB_RRC_UE_t *ue = _ue;
++  uint64_t mask = 1;
++  int ret;
++  for (ret = 0; ret < 64; ret++, mask <<= 1)
++    if (!(ue->report_config_ids & mask))
++      break;
++  DevAssert(ret < 64);
++  ue->report_config_ids |= mask;
++  return ret + 1;
++}
++
++void free_report_config_id(void *_ue, int mo_id)
++{
++  gNB_RRC_UE_t *ue = _ue;
++  uint64_t mask = (uint64_t)1 << (uint64_t)(mo_id - 1);
++  DevAssert(ue->report_config_ids & mask);
++  ue->report_config_ids &= ~mask;
++}
+diff --git a/openair2/RRC/NR/rrc_gNB_measurements.h b/openair2/RRC/NR/rrc_gNB_measurements.h
+new file mode 100644
+index 0000000000..287569dd9f
+--- /dev/null
++++ b/openair2/RRC/NR/rrc_gNB_measurements.h
+@@ -0,0 +1,23 @@
++/*
++ * SPDX-License-Identifier: LicenseRef-CSSL-1.0
++ */
++
++#ifndef RRC_GNB_MEASUREMENTS_H_
++#define RRC_GNB_MEASUREMENTS_H_
++
++/* void *ue is actually gNB_RRC_UE_t *ue but this cannot be used because
++ * including "openair2/RRC/NR/nr_rrc_defs.h" breaks the compilation of
++ * nr-uesoftmodem
++ * to be fixed if it's seen as a problem
++ */
++
++int allocate_measurement_object_id(void *ue);
++void free_measurement_object_id(void *ue, int mo_id);
++
++int allocate_measurement_id(void *ue);
++void free_measurement_id(void *ue, int mo_id);
++
++int allocate_report_config_id(void *ue);
++void free_report_config_id(void *ue, int mo_id);
++
++#endif /* RRC_GNB_MEASUREMENTS_H_ */
+-- 
+2.48.1
+

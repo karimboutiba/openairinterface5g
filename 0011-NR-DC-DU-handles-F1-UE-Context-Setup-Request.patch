@@ -1,0 +1,300 @@
+From a19030bb068753afa8355bb4dd3906d2d30b7159 Mon Sep 17 00:00:00 2001
+From: Cedric Roux <cedric.roux@eurecom.fr>
+Date: Thu, 22 Jan 2026 16:08:11 +0100
+Subject: [PATCH 11/21] NR-DC: DU handles F1 UE Context Setup Request
+
+- create the UE
+- send F1 UE Context Setup Response to the CU
+
+Signed-off-by: Cedric Roux <cedric.roux@eurecom.fr>
+---
+ CMakeLists.txt                                |  1 +
+ .../LAYER2/NR_MAC_gNB/mac_rrc_dl_handler.c    | 29 +++---
+ .../LAYER2/NR_MAC_gNB/mac_rrc_dl_handler.h    | 10 ++
+ .../NR_MAC_gNB/nrdc_mac_rrc_dl_handler.c      | 98 +++++++++++++++++++
+ .../NR_MAC_gNB/nrdc_mac_rrc_dl_handler.h      | 12 +++
+ openair2/RRC/NR/rrc_gNB.c                     |  3 +
+ openair2/RRC/NR/rrc_gNB_nrdc.c                | 13 +++
+ openair2/RRC/NR/rrc_gNB_nrdc.h                |  3 +
+ 8 files changed, 156 insertions(+), 13 deletions(-)
+ create mode 100644 openair2/LAYER2/NR_MAC_gNB/nrdc_mac_rrc_dl_handler.c
+ create mode 100644 openair2/LAYER2/NR_MAC_gNB/nrdc_mac_rrc_dl_handler.h
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 25e9c35dce..328f073f6d 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1255,6 +1255,7 @@ set (MAC_NR_SRC
+   ${NR_GNB_MAC_DIR}/mac_rrc_ul_direct.c
+   ${NR_GNB_MAC_DIR}/mac_rrc_ul_f1ap.c
+   ${NR_GNB_MAC_DIR}/nr_radio_config.c
++  ${NR_GNB_MAC_DIR}/nrdc_mac_rrc_dl_handler.c
+  )
+ 
+ 
+diff --git a/openair2/LAYER2/NR_MAC_gNB/mac_rrc_dl_handler.c b/openair2/LAYER2/NR_MAC_gNB/mac_rrc_dl_handler.c
+index 77dd67e42c..3db6e9faef 100644
+--- a/openair2/LAYER2/NR_MAC_gNB/mac_rrc_dl_handler.c
++++ b/openair2/LAYER2/NR_MAC_gNB/mac_rrc_dl_handler.c
+@@ -17,6 +17,7 @@
+ #include "lib/f1ap_rrc_message_transfer.h"
+ #include "lib/f1ap_interface_management.h"
+ #include "lib/f1ap_ue_context.h"
++#include "nrdc_mac_rrc_dl_handler.h"
+ 
+ #include "executables/softmodem-common.h"
+ 
+@@ -293,12 +294,12 @@ static NR_QoS_config_t get_qos_config(const f1ap_qos_flow_param_t *qos)
+   return qos_c;
+ }
+ 
+-static int handle_ue_context_drbs_setup(NR_UE_info_t *UE,
+-                                        int drbs_len,
+-                                        const f1ap_drb_to_setup_t *req_drbs,
+-                                        f1ap_drb_setup_t **resp_drbs,
+-                                        NR_CellGroupConfig_t *cellGroupConfig,
+-                                        const nr_rlc_configuration_t *rlc_config)
++int handle_ue_context_drbs_setup(NR_UE_info_t *UE,
++                                 int drbs_len,
++                                 const f1ap_drb_to_setup_t *req_drbs,
++                                 f1ap_drb_setup_t **resp_drbs,
++                                 NR_CellGroupConfig_t *cellGroupConfig,
++                                 const nr_rlc_configuration_t *rlc_config)
+ {
+   DevAssert(req_drbs != NULL && resp_drbs != NULL && cellGroupConfig != NULL);
+   instance_t f1inst = get_f1_gtp_instance();
+@@ -472,7 +473,7 @@ static NR_UE_NR_Capability_t *get_ue_nr_cap_from_ho_prep_info(uint8_t *buf, uint
+   return cap;
+ }
+ 
+-static NR_CG_ConfigInfo_t *get_cg_config_info(uint8_t *buf, uint32_t len)
++NR_CG_ConfigInfo_t *get_cg_config_info(uint8_t *buf, uint32_t len)
+ {
+   struct NR_CG_ConfigInfo *cg_configinfo = NULL;
+   asn_dec_rval_t dec_rval = uper_decode_complete(NULL, &asn_DEF_NR_CG_ConfigInfo, (void **)&cg_configinfo, buf, len);
+@@ -484,7 +485,7 @@ static NR_CG_ConfigInfo_t *get_cg_config_info(uint8_t *buf, uint32_t len)
+   return cg_configinfo;
+ }
+ 
+-static NR_UE_NR_Capability_t *get_ue_nr_cap_from_cg_config_info(const NR_CG_ConfigInfo_t *cgci)
++NR_UE_NR_Capability_t *get_ue_nr_cap_from_cg_config_info(const NR_CG_ConfigInfo_t *cgci)
+ {
+   /* INTO DU handler */
+   if (cgci->criticalExtensions.present != NR_CG_ConfigInfo__criticalExtensions_PR_c1)
+@@ -705,11 +706,13 @@ void ue_context_setup_request(const f1ap_ue_context_setup_req_t *req)
+   if (cu2du->meas_timing_config != NULL)
+     mtc = get_nr_mtc(cu2du->meas_timing_config->buf, cu2du->meas_timing_config->len);
+ 
+-  /* 38.473: "For DC operation, the CG-ConfigInfo IE shall be included in the CU
+-   * to DU RRC Information IE at the gNB acting as secondary node" As of now,
+-   * we only handle NSA => we check we have CG-ConfigInfo if not SA or have SA
+-   * and no CG-ConfigInfo */
+-  AssertFatal(is_SA ^ (cg_configinfo != NULL), "cannot have SA and CG-ConfigInfo: NR-DC not supported xor need CG-ConfigInfo for NSA/phy-test/do-ra\n");
++  /* inclusion of CG-ConfigInfo in SA mode is interpreted
++   * as NR-DC activation in the DU
++   */
++  if (is_SA && cg_configinfo)
++    return nrdc_ue_context_setup_request(req);
++
++  AssertFatal(is_SA || (cg_configinfo != NULL), "CG-ConfigInfo needed for NSA/phy-test/do-ra\n");
+ 
+   NR_SCHED_LOCK(&mac->sched_lock);
+ 
+diff --git a/openair2/LAYER2/NR_MAC_gNB/mac_rrc_dl_handler.h b/openair2/LAYER2/NR_MAC_gNB/mac_rrc_dl_handler.h
+index ba7154eb15..f0f1e44543 100644
+--- a/openair2/LAYER2/NR_MAC_gNB/mac_rrc_dl_handler.h
++++ b/openair2/LAYER2/NR_MAC_gNB/mac_rrc_dl_handler.h
+@@ -8,6 +8,7 @@
+ #include "common/platform_types.h"
+ #include "f1ap_messages_types.h"
+ #include "openair2/RRC/NR/MESSAGES/asn1_msg.h"
++#include "nr_mac_gNB.h"
+ 
+ void f1_reset_cu_initiated(const f1ap_reset_t *reset);
+ void f1_reset_acknowledge_du_initiated(const f1ap_reset_ack_t *ack);
+@@ -23,4 +24,13 @@ void ue_context_release_command(const f1ap_ue_context_rel_cmd_t *cmd);
+ 
+ void dl_rrc_message_transfer(const f1ap_dl_rrc_message_t *dl_rrc);
+ 
++NR_CG_ConfigInfo_t *get_cg_config_info(uint8_t *buf, uint32_t len);
++NR_UE_NR_Capability_t *get_ue_nr_cap_from_cg_config_info(const NR_CG_ConfigInfo_t *cgci);
++int handle_ue_context_drbs_setup(NR_UE_info_t *UE,
++                                 int drbs_len,
++                                 const f1ap_drb_to_setup_t *req_drbs,
++                                 f1ap_drb_setup_t **resp_drbs,
++                                 NR_CellGroupConfig_t *cellGroupConfig,
++                                 const nr_rlc_configuration_t *rlc_config);
++
+ #endif /* MAC_RRC_DL_HANDLER_H */
+diff --git a/openair2/LAYER2/NR_MAC_gNB/nrdc_mac_rrc_dl_handler.c b/openair2/LAYER2/NR_MAC_gNB/nrdc_mac_rrc_dl_handler.c
+new file mode 100644
+index 0000000000..5826e3e152
+--- /dev/null
++++ b/openair2/LAYER2/NR_MAC_gNB/nrdc_mac_rrc_dl_handler.c
+@@ -0,0 +1,98 @@
++/*
++ * SPDX-License-Identifier: LicenseRef-CSSL-1.0
++ */
++
++#include "nrdc_mac_rrc_dl_handler.h"
++
++#include "common/utils/LOG/log.h"
++#include "nr_mac_gNB.h"
++#include "mac_proto.h"
++#include "mac_rrc_dl_handler.h"
++#include "openair2/F1AP/f1ap_ids.h"
++#include "openair2/F1AP/lib/f1ap_ue_context.h"
++
++static NR_UE_info_t *nrdc_create_new_UE(gNB_MAC_INST *mac, uint32_t cu_id, const NR_CG_ConfigInfo_t *cgci)
++{
++  int CC_id = 0;
++  rnti_t rnti;
++  bool found = nr_mac_get_new_rnti(&mac->UE_info, &rnti);
++  if (!found)
++    return NULL;
++
++  f1_ue_data_t new_ue_data = {.secondary_ue = cu_id};
++  bool success = du_add_f1_ue_data(rnti, &new_ue_data);
++  DevAssert(success);
++
++  NR_UE_info_t *UE = get_new_nr_ue_inst(&mac->UE_info.uid_allocator, rnti, NULL, &mac->radio_config);
++  AssertFatal(UE->uid < MAX_MOBILES_PER_GNB, "cannot create UE context, UE context setup failure not implemented\n");
++
++  NR_COMMON_channels_t *cc = &mac->common_channels[CC_id];
++  const NR_ServingCellConfigCommon_t *scc = cc->ServingCellConfigCommon;
++  const nr_mac_config_t *configuration = &mac->radio_config;
++
++  NR_UE_NR_Capability_t *cap = get_ue_nr_cap_from_cg_config_info(cgci);
++  int ssb_index = get_ssbidx_from_beam(mac, UE->UE_beam_index);
++  NR_CellGroupConfig_t *cellGroupConfig = get_default_secondaryCellGroup(scc, cap, 1, 1, configuration, UE->uid, ssb_index);
++  AssertFatal(cellGroupConfig != NULL, "out of memory\n");
++  cellGroupConfig->spCellConfig->reconfigurationWithSync = get_reconfiguration_with_sync(UE->rnti, UE->uid, scc, mac->frame);
++  UE->capability = cap;
++  UE->local_bwp_id = 1; // nrdc_get_default_secondaryCellGroup sets 1st active BWP as 1
++
++  // note: we don't pass the cellGroupConfig to add_new_nr_ue() because we need
++  // the uid to create the CellGroupConfig (which is in the UE context created
++  // by add_new_nr_ue(); it's a kind of chicken-and-egg problem), so below we
++  // complete the UE context with the information that add_new_nr_ue() would
++  // have added
++  UE->CellGroup = cellGroupConfig;
++
++  if (!add_new_UE_RA(mac, UE)) {
++    delete_nr_ue_data(UE, &mac->UE_info.uid_allocator);
++    LOG_E(NR_MAC, "UE list full while creating new UE\n");
++    return NULL;
++  }
++  nr_mac_prepare_ra_ue(mac, UE);
++
++  return UE;
++}
++
++void nrdc_ue_context_setup_request(const f1ap_ue_context_setup_req_t *req)
++{
++  LOG_D(NR_MAC, "nrdc_ue_context_setup_request called!\n");
++
++  gNB_MAC_INST *mac = RC.nrmac[0];
++
++  f1ap_ue_context_setup_resp_t resp = {
++    .gNB_CU_ue_id = req->gNB_CU_ue_id,
++  };
++
++  const f1ap_cu_to_du_rrc_info_t *cu2du = &req->cu_to_du_rrc_info;
++  NR_CG_ConfigInfo_t *cg_configinfo = get_cg_config_info(cu2du->cg_configinfo->buf, cu2du->cg_configinfo->len);
++
++  NR_SCHED_LOCK(&mac->sched_lock);
++
++  NR_UE_info_t *UE = nrdc_create_new_UE(mac, req->gNB_CU_ue_id, cg_configinfo);
++  AssertFatal(UE, "NR-DC: cannot create a new UE, but UE Context Setup Failed not implemented yet\n");
++  resp.gNB_DU_ue_id = UE->rnti;
++  resp.crnti = malloc_or_fail(sizeof(*resp.crnti));
++  *resp.crnti = UE->rnti;
++
++  NR_CellGroupConfig_t *new_CellGroup = clone_CellGroupConfig(UE->CellGroup);
++
++  if (req->drbs_len > 0)
++    resp.drbs_len = handle_ue_context_drbs_setup(UE, req->drbs_len, req->drbs, &resp.drbs, new_CellGroup, &mac->rlc_config);
++
++  NR_SCHED_UNLOCK(&mac->sched_lock);
++
++  byte_array_t cgc = { .buf = calloc_or_fail(1,1024) };
++  asn_enc_rval_t enc_rval =
++      uper_encode_to_buffer(&asn_DEF_NR_CellGroupConfig, NULL, new_CellGroup, cgc.buf, 1024);
++  AssertFatal(enc_rval.encoded > 0, "Could not encode CellGroup, failed element %s\n", enc_rval.failed_type->name);
++  cgc.len = (enc_rval.encoded + 7) >> 3;
++  resp.du_to_cu_rrc_info.cell_group_config = cgc;
++
++  mac->mac_rrc.ue_context_setup_response(&resp);
++
++  /* free the memory we allocated above */
++  free_ue_context_setup_resp(&resp);
++  ASN_STRUCT_FREE(asn_DEF_NR_CG_ConfigInfo, cg_configinfo);
++}
+diff --git a/openair2/LAYER2/NR_MAC_gNB/nrdc_mac_rrc_dl_handler.h b/openair2/LAYER2/NR_MAC_gNB/nrdc_mac_rrc_dl_handler.h
+new file mode 100644
+index 0000000000..7810b902f9
+--- /dev/null
++++ b/openair2/LAYER2/NR_MAC_gNB/nrdc_mac_rrc_dl_handler.h
+@@ -0,0 +1,12 @@
++/*
++ * SPDX-License-Identifier: LicenseRef-CSSL-1.0
++ */
++
++#ifndef NRDC_MAC_RRC_DL_HANDLER_H
++#define NRDC_MAC_RRC_DL_HANDLER_H
++
++#include "f1ap_messages_types.h"
++
++void nrdc_ue_context_setup_request(const f1ap_ue_context_setup_req_t *req);
++
++#endif /* NRDC_MAC_RRC_DL_HANDLER_H */
+diff --git a/openair2/RRC/NR/rrc_gNB.c b/openair2/RRC/NR/rrc_gNB.c
+index adae252335..01f900c7dc 100644
+--- a/openair2/RRC/NR/rrc_gNB.c
++++ b/openair2/RRC/NR/rrc_gNB.c
+@@ -3884,6 +3884,9 @@ static void rrc_CU_process_ue_context_setup_response(MessageDef *msg_p, instance
+   gNB_RRC_UE_t *UE = &ue_context_p->ue_context;
+   UE->f1_ue_context_active = true;
+ 
++  if (UE->nrdc && rrc_gnb_nrdc_wait_for_f1_context_setup_response(UE))
++    return nrdc_rrc_CU_process_ue_context_setup_response(UE, rrc, resp);
++
+   // Store the encoded CellGroupConfig for transparent forwarding
+   byte_array_t *cgc = &resp->du_to_cu_rrc_info.cell_group_config;
+   store_cgc(UE, cgc);
+diff --git a/openair2/RRC/NR/rrc_gNB_nrdc.c b/openair2/RRC/NR/rrc_gNB_nrdc.c
+index 256b9a1418..78d7a15d98 100644
+--- a/openair2/RRC/NR/rrc_gNB_nrdc.c
++++ b/openair2/RRC/NR/rrc_gNB_nrdc.c
+@@ -679,3 +679,16 @@ int get_scg_measurement_id(gNB_RRC_UE_t *ue)
+   nrdc_ue_state_t *nrdc = ue->nrdc;
+   return nrdc->measurement_id;
+ }
++
++bool rrc_gnb_nrdc_wait_for_f1_context_setup_response(gNB_RRC_UE_t *ue)
++{
++  if (!ue->nrdc)
++    return false;
++  nrdc_ue_state_t *nrdc = ue->nrdc;
++  return nrdc->state == ACTIVATE_NRDC_WAIT_FOR_F1_CONTEXT_SETUP_RESPONSE;
++}
++
++void nrdc_rrc_CU_process_ue_context_setup_response(gNB_RRC_UE_t *ue, gNB_RRC_INST *rrc, f1ap_ue_context_setup_resp_t *resp)
++{
++  LOG_E(NR_RRC, "nrdc_rrc_CU_process_ue_context_setup_response called\n");
++}
+diff --git a/openair2/RRC/NR/rrc_gNB_nrdc.h b/openair2/RRC/NR/rrc_gNB_nrdc.h
+index 0c6582babe..0f4decdae4 100644
+--- a/openair2/RRC/NR/rrc_gNB_nrdc.h
++++ b/openair2/RRC/NR/rrc_gNB_nrdc.h
+@@ -17,4 +17,7 @@ void rrc_gnb_nrdc_timeout(gNB_RRC_INST *rrc, nr_rrc_nrdc_timeout_t *timeout);
+ 
+ int get_scg_measurement_id(gNB_RRC_UE_t *ue);
+ 
++bool rrc_gnb_nrdc_wait_for_f1_context_setup_response(gNB_RRC_UE_t *ue);
++void nrdc_rrc_CU_process_ue_context_setup_response(gNB_RRC_UE_t *ue, gNB_RRC_INST *rrc, f1ap_ue_context_setup_resp_t *resp);
++
+ #endif /* __RRC_GNB_NRDC_H__ */
+-- 
+2.48.1
+

@@ -1,0 +1,347 @@
+From 25c5fd511a4827213b744e1f99f304c2f32dd1cf Mon Sep 17 00:00:00 2001
+From: Cedric Roux <cedric.roux@eurecom.fr>
+Date: Tue, 6 Jan 2026 15:28:31 +0100
+Subject: [PATCH 07/21] first step of NR-DC: ask for UE capabilities to check
+ for NR-DC support
+
+Signed-off-by: Cedric Roux <cedric.roux@eurecom.fr>
+---
+ CMakeLists.txt                 |   1 +
+ openair2/RRC/NR/nr_rrc_defs.h  |   4 +
+ openair2/RRC/NR/nr_rrc_proto.h |   7 ++
+ openair2/RRC/NR/rrc_gNB.c      |  20 ++--
+ openair2/RRC/NR/rrc_gNB_nrdc.c | 191 +++++++++++++++++++++++++++++++++
+ openair2/RRC/NR/rrc_gNB_nrdc.h |  14 +++
+ 6 files changed, 231 insertions(+), 6 deletions(-)
+ create mode 100644 openair2/RRC/NR/rrc_gNB_nrdc.c
+ create mode 100644 openair2/RRC/NR/rrc_gNB_nrdc.h
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index ba9551bca2..09b7082523 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1179,6 +1179,7 @@ set(L2_NR_SRC
+   ${NR_RRC_DIR}/rrc_gNB_cuup.c
+   ${NR_RRC_DIR}/rrc_gNB_du.c
+   ${NR_RRC_DIR}/rrc_gNB_mobility.c
++  ${NR_RRC_DIR}/rrc_gNB_nrdc.c
+   )
+ 
+ set(L2_SRC_UE
+diff --git a/openair2/RRC/NR/nr_rrc_defs.h b/openair2/RRC/NR/nr_rrc_defs.h
+index 49c53866de..b4c56fb7d3 100644
+--- a/openair2/RRC/NR/nr_rrc_defs.h
++++ b/openair2/RRC/NR/nr_rrc_defs.h
+@@ -121,6 +121,7 @@ typedef enum {
+   RRC_PDUSESSION_MODIFY,
+   RRC_PDUSESSION_RELEASE,
+   RRC_UECAPABILITY_ENQUIRY,
++  RRC_F1_NRDC_IN_PROGRESS,
+ } rrc_action_t;
+ 
+ typedef struct nr_rrc_config {
+@@ -266,6 +267,9 @@ typedef struct gNB_RRC_UE_s {
+   uint64_t measurement_object_ids;       /* bitfield, 64 possible values */
+   uint64_t measurement_ids;              /* bitfield, 64 possible values */
+   uint64_t report_config_ids;            /* bitfield, 64 possible values */
++
++  /* opaque pointer to store NR-DC state (NULL when no NR-DC) */
++  void *nrdc;
+ } gNB_RRC_UE_t;
+ 
+ typedef struct rrc_gNB_ue_context_s {
+diff --git a/openair2/RRC/NR/nr_rrc_proto.h b/openair2/RRC/NR/nr_rrc_proto.h
+index 698900a673..206b8c781f 100644
+--- a/openair2/RRC/NR/nr_rrc_proto.h
++++ b/openair2/RRC/NR/nr_rrc_proto.h
+@@ -113,4 +113,11 @@ void rrc_f1_ue_context_setup_for_target_du(const gNB_RRC_INST *rrc,
+                                            const nr_rrc_cell_container_t *cell,
+                                            const byte_array_t *ho_prep_info);
+ 
++void nr_rrc_transfer_protected_rrc_message(const gNB_RRC_INST *rrc,
++                                           const gNB_RRC_UE_t *ue_p,
++                                           uint8_t srb_id,
++                                           const uint32_t message_id,
++                                           const uint8_t *buffer,
++                                           int size);
++
+ #endif
+diff --git a/openair2/RRC/NR/rrc_gNB.c b/openair2/RRC/NR/rrc_gNB.c
+index 592fdfddda..cfc08c83ab 100644
+--- a/openair2/RRC/NR/rrc_gNB.c
++++ b/openair2/RRC/NR/rrc_gNB.c
+@@ -82,6 +82,7 @@
+ #include "NR_HandoverCommand.h"
+ #include "openair2/SDAP/nr_sdap/nr_sdap_configuration.h"
+ #include "rrc_gNB_measurements.h"
++#include "rrc_gNB_nrdc.h"
+ 
+ #ifdef E2_AGENT
+ #include "openair2/E2AP/RAN_FUNCTION/O-RAN/ran_func_rc_extern.h"
+@@ -295,12 +296,12 @@ static void rrc_deliver_dl_rrc_message(void *deliver_pdu_data, ue_id_t ue_id, in
+   data->rrc->mac_rrc.dl_rrc_message_transfer(data->assoc_id, data->dl_rrc);
+ }
+ 
+-static void nr_rrc_transfer_protected_rrc_message(const gNB_RRC_INST *rrc,
+-                                                  const gNB_RRC_UE_t *ue_p,
+-                                                  uint8_t srb_id,
+-                                                  const uint32_t message_id,
+-                                                  const uint8_t *buffer,
+-                                                  int size)
++void nr_rrc_transfer_protected_rrc_message(const gNB_RRC_INST *rrc,
++                                           const gNB_RRC_UE_t *ue_p,
++                                           uint8_t srb_id,
++                                           const uint32_t message_id,
++                                           const uint8_t *buffer,
++                                           int size)
+ {
+   DevAssert(size > 0);
+   f1_ue_data_t ue_data = cu_get_f1_ue_data(ue_p->rrc_ue_id);
+@@ -3381,6 +3382,8 @@ static void handle_rrcReconfigurationComplete(gNB_RRC_INST *rrc, gNB_RRC_UE_t *U
+   UE->ue_reconfiguration_counter++;
+   UE->ongoing_reconfiguration = false;
+ 
++  bool start_nrdc = false;
++
+   switch (UE->xids[xid]) {
+     case RRC_PDUSESSION_RELEASE: {
+       rrc_gNB_send_NGAP_PDUSESSION_RELEASE_RESPONSE(rrc, UE, xid);
+@@ -3400,6 +3403,8 @@ static void handle_rrcReconfigurationComplete(gNB_RRC_INST *rrc, gNB_RRC_UE_t *U
+               "UE %d: RRC Reconfiguration Complete for PDU session establishment, but no PDU sessions were setup\n",
+               UE->rrc_ue_id);
+       reset_delayed_action(&UE->delayed_action);
++      /* once a PDU session is established, we can start NR-DC */
++      start_nrdc = true;
+       break;
+     case RRC_PDUSESSION_MODIFY:
+       rrc_gNB_send_NGAP_PDUSESSION_MODIFY_RESP(rrc, UE, xid);
+@@ -3441,6 +3446,9 @@ static void handle_rrcReconfigurationComplete(gNB_RRC_INST *rrc, gNB_RRC_UE_t *U
+   };
+   rrc->mac_rrc.ue_context_modification_request(ue_data.du_assoc_id, &req);
+   /* nothing to be freed */
++
++  if (start_nrdc)
++    rrc_gnb_nrdc_start(rrc, UE);
+ }
+ 
+ static void rrc_gNB_generate_UECapabilityEnquiry(gNB_RRC_INST *rrc, gNB_RRC_UE_t *ue)
+diff --git a/openair2/RRC/NR/rrc_gNB_nrdc.c b/openair2/RRC/NR/rrc_gNB_nrdc.c
+new file mode 100644
+index 0000000000..074144e6b4
+--- /dev/null
++++ b/openair2/RRC/NR/rrc_gNB_nrdc.c
+@@ -0,0 +1,191 @@
++/*
++ * SPDX-License-Identifier: LicenseRef-CSSL-1.0
++ */
++
++#include "rrc_gNB_nrdc.h"
++
++#include "rrc_gNB_UE_context.h"
++#include "rrc_gNB_du.h"
++#include "rrc_gNB_measurements.h"
++#include "LAYER2/NR_MAC_COMMON/nr_mac.h"
++#include "NR_UE-CapabilityRequestFilterNR.h"
++#include "NR_UECapabilityEnquiry-v1560-IEs.h"
++
++typedef enum {
++  NRDC_NONE,
++  ACTIVATE_NRDC_WAIT_FOR_CAPABILITIES
++} nrdc_state_t;
++
++typedef struct {
++  nrdc_state_t state;
++  int mcg_band;
++  int scg_band;
++  int xid;
++} nrdc_ue_state_t;
++
++static int generate_ue_capability_enquiry(uint8_t *out, int outsize, int xid, int mcg_band, int scg_band)
++{
++  /* capability request filter */
++  NR_UE_CapabilityRequestFilterNR_t filter = {
++    .frequencyBandListFilter = &(struct NR_FreqBandList) {
++      .list = {
++        .array = (struct NR_FreqBandInformation *[]) {
++          &(struct NR_FreqBandInformation) {
++            .present = NR_FreqBandInformation_PR_bandInformationNR,
++            .choice = {
++              .bandInformationNR = &(struct NR_FreqBandInformationNR) {
++                .bandNR = (NR_FreqBandIndicatorNR_t) mcg_band
++              }
++            }
++          },
++          &(struct NR_FreqBandInformation) {
++            .present = NR_FreqBandInformation_PR_bandInformationNR,
++            .choice = {
++              .bandInformationNR = &(struct NR_FreqBandInformationNR) {
++                .bandNR = (NR_FreqBandIndicatorNR_t) scg_band
++              }
++            }
++          }
++        },
++        .count = 2
++      }
++    }
++  };
++
++  uint8_t filter_buf[512];
++  int filter_buf_size = sizeof(filter_buf);
++  asn_enc_rval_t size = uper_encode_to_buffer(&asn_DEF_NR_UE_CapabilityRequestFilterNR, NULL, &filter, filter_buf, filter_buf_size);
++  AssertFatal(size.encoded > 0, "failed to encode FreqBandInformationNR\n");
++  filter_buf_size = (size.encoded + 7) / 8;
++
++  /* capability enquiry extension */
++  NR_UECapabilityEnquiry_v1560_IEs_t ext = {
++    .capabilityRequestFilterCommon = &(struct NR_UE_CapabilityRequestFilterCommon) {
++      .mrdc_Request = &(struct NR_UE_CapabilityRequestFilterCommon__mrdc_Request) {
++        .includeNR_DC = &(long) { NR_UE_CapabilityRequestFilterCommon__mrdc_Request__includeNR_DC_true }
++      },
++      .ext2 = &(struct NR_UE_CapabilityRequestFilterCommon__ext2) {
++        .requestedCellGrouping_r16 = &(struct NR_UE_CapabilityRequestFilterCommon__ext2__requestedCellGrouping_r16) {
++          .list = {
++            .array = (struct NR_CellGrouping_r16 *[]) {
++              &(struct NR_CellGrouping_r16) {
++                .mcg_r16 = {
++                  .list = {
++                    .array = (NR_FreqBandIndicatorNR_t *[]) {
++                      &(NR_FreqBandIndicatorNR_t) { mcg_band }
++                    },
++                    .count = 1
++                  }
++                },
++                .scg_r16 = {
++                  .list = {
++                    .array = (NR_FreqBandIndicatorNR_t *[]) {
++                      &(NR_FreqBandIndicatorNR_t) { scg_band }
++                    },
++                    .count = 1
++                  }
++                },
++                /* not sure of this sync/async mode, see 38.133 chapter 7
++                 * and maybe 38.321, 38.214, 38.401 (chapter 9, synchronization)
++                 * for TAG where timing matters
++                 */
++                .mode_r16 = NR_CellGrouping_r16__mode_r16_async
++              }
++            },
++            .count = 1
++          }
++        }
++      }
++    }
++  };
++
++  uint8_t ext_buf[512];
++  int ext_buf_size = sizeof(ext_buf);
++  size = uper_encode_to_buffer(&asn_DEF_NR_UECapabilityEnquiry_v1560_IEs, NULL, &ext, ext_buf, ext_buf_size);
++  AssertFatal(size.encoded > 0, "failed to encode FreqBandInformationNR\n");
++  ext_buf_size = (size.encoded + 7) / 8;
++
++  /* capability enquiry */
++  NR_DL_DCCH_Message_t m = {
++    .message = {
++      .present = NR_DL_DCCH_MessageType_PR_c1,
++      .choice = {
++        .c1 = &(struct NR_DL_DCCH_MessageType__c1) {
++          .present = NR_DL_DCCH_MessageType__c1_PR_ueCapabilityEnquiry,
++          .choice = {
++            .ueCapabilityEnquiry = &(struct NR_UECapabilityEnquiry) {
++              .rrc_TransactionIdentifier = xid,
++              .criticalExtensions = {
++                .present = NR_UECapabilityEnquiry__criticalExtensions_PR_ueCapabilityEnquiry,
++                .choice = {
++                  .ueCapabilityEnquiry = &(struct NR_UECapabilityEnquiry_IEs) {
++                    .ue_CapabilityRAT_RequestList = {
++                      .list = {
++                        .array = (struct NR_UE_CapabilityRAT_Request *[]) {
++                          &(struct NR_UE_CapabilityRAT_Request) {
++                            .rat_Type = NR_RAT_Type_nr,
++                            .capabilityRequestFilter = &(OCTET_STRING_t) {
++                              .buf = filter_buf,
++                              .size = filter_buf_size
++                            }
++                          }
++                        },
++                        .count = 1
++                      }
++                    },
++                    .ue_CapabilityEnquiryExt = &(OCTET_STRING_t) {
++                      .buf = ext_buf,
++                      .size = ext_buf_size
++                    }
++                  }
++                }
++              }
++            }
++          }
++        }
++      }
++    }
++  };
++
++  size = uper_encode_to_buffer(&asn_DEF_NR_DL_DCCH_Message, NULL, &m, out, outsize);
++  AssertFatal(size.encoded > 0, "failed to encode UECapabilityEnquiry\n");
++
++  return (size.encoded + 7) / 8;
++}
++
++/* This function checks that the CU has DUs connected that correspond
++ * to a configured NR-DC combination.
++ * For the first one that is found, the UE capabilities for NR-DC are
++ * requested.
++ */
++void rrc_gnb_nrdc_start(gNB_RRC_INST *rrc, gNB_RRC_UE_t *ue)
++{
++  /* if already in NR-DC, do nothing */
++  if (ue->nrdc)
++    return;
++
++  /* look for an NR-DC combination */
++  int mcg_band = 77;
++  int scg_band = 257;
++
++  /* a combination is found, start NR-DC, ask for UE capabilities */
++  /* allocate the NR-DC state data in the UE */
++  nrdc_ue_state_t *nrdc = calloc_or_fail(1, sizeof(*nrdc));
++  ue->nrdc = nrdc;
++
++  nrdc->state = ACTIVATE_NRDC_WAIT_FOR_CAPABILITIES;
++
++  nrdc->mcg_band = mcg_band;
++  nrdc->scg_band = scg_band;
++
++  int xid = rrc_gNB_get_next_transaction_identifier(rrc->module_id);
++  nrdc->xid = xid;
++  ue->xids[xid] = RRC_F1_NRDC_IN_PROGRESS;
++
++  uint8_t ue_cap[1024];
++  int size = generate_ue_capability_enquiry(ue_cap, sizeof(ue_cap), xid, mcg_band, scg_band);
++
++  /* send it to the UE */
++  uint32_t msg_id = NR_DL_DCCH_MessageType__c1_PR_ueCapabilityEnquiry;
++  nr_rrc_transfer_protected_rrc_message(rrc, ue, DL_SCH_LCID_DCCH, msg_id, ue_cap, size);
++}
+diff --git a/openair2/RRC/NR/rrc_gNB_nrdc.h b/openair2/RRC/NR/rrc_gNB_nrdc.h
+new file mode 100644
+index 0000000000..ca8be694a5
+--- /dev/null
++++ b/openair2/RRC/NR/rrc_gNB_nrdc.h
+@@ -0,0 +1,14 @@
++/*
++ * SPDX-License-Identifier: LicenseRef-CSSL-1.0
++ */
++
++#ifndef __RRC_GNB_NRDC_H__
++#define __RRC_GNB_NRDC_H__
++
++#include "nr_rrc_defs.h"
++#include "NR_DL-DCCH-Message.h"
++#include "NR_UL-DCCH-Message.h"
++
++void rrc_gnb_nrdc_start(gNB_RRC_INST *rrc, gNB_RRC_UE_t *ue);
++
++#endif /* __RRC_GNB_NRDC_H__ */
+-- 
+2.48.1
+

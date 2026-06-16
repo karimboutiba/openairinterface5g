@@ -1,0 +1,133 @@
+From b860e13e3d9e26e5e77b677f5a1114003709c1f8 Mon Sep 17 00:00:00 2001
+From: Cedric Roux <cedric.roux@eurecom.fr>
+Date: Tue, 6 Jan 2026 12:54:04 +0100
+Subject: [PATCH 05/21] cleanup MAX_MEAS_XX
+
+Those values exist in both LTE and NR, let's rename to NR_MAX_MEAS_XX and make
+them known to NR-UE only, they are not used in the gNB.
+
+Signed-off-by: Cedric Roux <cedric.roux@eurecom.fr>
+---
+ openair2/RRC/NR/nr_rrc_defs.h |  4 ----
+ openair2/RRC/NR_UE/rrc_UE.c   | 14 +++++++-------
+ openair2/RRC/NR_UE/rrc_defs.h | 14 +++++++-------
+ 3 files changed, 14 insertions(+), 18 deletions(-)
+
+diff --git a/openair2/RRC/NR/nr_rrc_defs.h b/openair2/RRC/NR/nr_rrc_defs.h
+index 606eb86327..1078b9de15 100644
+--- a/openair2/RRC/NR/nr_rrc_defs.h
++++ b/openair2/RRC/NR/nr_rrc_defs.h
+@@ -45,10 +45,6 @@ typedef enum {
+   NR_RRC_HO_STARTED
+ } NR_RRC_status_t;
+ 
+-#define MAX_MEAS_OBJ                                  7
+-#define MAX_MEAS_CONFIG                               7
+-#define MAX_MEAS_ID                                   7
+-
+ #define UNDEF_SECURITY_MODE                           0xff
+ #define NO_SECURITY_MODE                              0x20
+ 
+diff --git a/openair2/RRC/NR_UE/rrc_UE.c b/openair2/RRC/NR_UE/rrc_UE.c
+index 37bca1d45a..a587244c7d 100644
+--- a/openair2/RRC/NR_UE/rrc_UE.c
++++ b/openair2/RRC/NR_UE/rrc_UE.c
+@@ -940,7 +940,7 @@ static void nr_rrc_process_reconfigurationWithSync(NR_UE_RRC_INST_t *rrc,
+ 
+   // Clear neighbor cell lists from measurement objects during handover
+   rrcPerNB_t *rrcNB = &rrc->perNB[gNB_index];
+-  for (int i = 0; i < MAX_MEAS_OBJ; i++) {
++  for (int i = 0; i < NR_MAX_MEAS_OBJ; i++) {
+     if (rrcNB->MeasObj[i] && rrcNB->MeasObj[i]->measObject.present == NR_MeasObjectToAddMod__measObject_PR_measObjectNR) {
+       NR_MeasObjectNR_t *measObjNR = rrcNB->MeasObj[i]->measObject.choice.measObjectNR;
+       if (measObjNR->cellsToAddModList) {
+@@ -1220,7 +1220,7 @@ static void handle_measobj_remove(rrcPerNB_t *rrc, struct NR_MeasObjectToRemoveL
+       // remove the entry with the matching measObjectId from the measObjectList
+       asn1cFreeStruc(asn_DEF_NR_MeasObjectToAddMod, rrc->MeasObj[id - 1]);
+       // remove all measId associated with this measObjectId from the measIdList
+-      for (int j = 0; j < MAX_MEAS_ID; j++) {
++      for (int j = 0; j < NR_MAX_MEAS_ID; j++) {
+         if (rrc->MeasId[j] && rrc->MeasId[j]->measObjectId == id) {
+           asn1cFreeStruc(asn_DEF_NR_MeasIdToAddMod, rrc->MeasId[j]);
+           handle_meas_reporting_remove(rrc, j, timers);
+@@ -1318,7 +1318,7 @@ static void handle_reportconfig_remove(rrcPerNB_t *rrc,
+     NR_ReportConfigId_t id = *remove_list->list.array[i];
+     // remove the entry with the matching reportConfigId from the reportConfigList
+     asn1cFreeStruc(asn_DEF_NR_ReportConfigToAddMod, rrc->ReportConfig[id]);
+-    for (int j = 0; j < MAX_MEAS_ID; j++) {
++    for (int j = 0; j < NR_MAX_MEAS_ID; j++) {
+       if (rrc->MeasId[j] && rrc->MeasId[j]->reportConfigId == id) {
+         // remove all measId associated with the reportConfigId from the measIdList
+         asn1cFreeStruc(asn_DEF_NR_MeasIdToAddMod, rrc->MeasId[j]);
+@@ -1340,7 +1340,7 @@ static void handle_reportconfig_addmod(rrcPerNB_t *rrc,
+     }
+     NR_ReportConfigId_t id = rep->reportConfigId;
+     if (rrc->ReportConfig[id]) {
+-      for (int j = 0; j < MAX_MEAS_ID; j++) {
++      for (int j = 0; j < NR_MAX_MEAS_ID; j++) {
+         // for each measId associated with this reportConfigId included in the measIdList
+         if (rrc->MeasId[j] && rrc->MeasId[j]->reportConfigId == id)
+           handle_meas_reporting_remove(rrc, j, timers);
+@@ -1370,7 +1370,7 @@ static void handle_quantityconfig(rrcPerNB_t *rrc, NR_QuantityConfig_t *quantity
+         UPDATE_IE(rrc->QuantityConfig[i]->quantityConfigRS_Index, quantityNR->quantityConfigRS_Index, struct NR_QuantityConfigRS);
+     }
+   }
+-  for (int j = 0; j < MAX_MEAS_ID; j++) {
++  for (int j = 0; j < NR_MAX_MEAS_ID; j++) {
+     // for each measId included in the measIdList
+     if (rrc->MeasId[j])
+       handle_meas_reporting_remove(rrc, j, timers);
+@@ -2769,7 +2769,7 @@ static int get_rsrp_value(const meas_t *cell)
+ 
+ static int get_meas_id(rrcPerNB_t *rrcNB, int report_config_id)
+ {
+-  for (int j = 0; j < MAX_MEAS_ID; j++) {
++  for (int j = 0; j < NR_MAX_MEAS_ID; j++) {
+     NR_MeasIdToAddMod_t *meas_id_toAddMod = rrcNB->MeasId[j];
+     if (meas_id_toAddMod && meas_id_toAddMod->reportConfigId == report_config_id)
+       return meas_id_toAddMod->measId;
+@@ -2936,7 +2936,7 @@ static void nr_ue_check_meas_report(NR_UE_RRC_INST_t *rrc, const uint8_t gnb_ind
+   rrcPerNB_t *rrcNB = rrc->perNB + gnb_index;
+   l3_measurements_t *l3_measurements = &rrcNB->l3_measurements;
+ 
+-  for (int i = 0; i < MAX_MEAS_CONFIG; i++) {
++  for (int i = 0; i < NR_MAX_MEAS_CONFIG; i++) {
+     NR_ReportConfigToAddMod_t *report_config = rrcNB->ReportConfig[i];
+     if (report_config == NULL)
+       continue;
+diff --git a/openair2/RRC/NR_UE/rrc_defs.h b/openair2/RRC/NR_UE/rrc_defs.h
+index 3880ba9b37..08d3161838 100644
+--- a/openair2/RRC/NR_UE/rrc_defs.h
++++ b/openair2/RRC/NR_UE/rrc_defs.h
+@@ -42,9 +42,9 @@
+ #include "notified_fifo.h"
+ 
+ #define NB_CNX_UE 2//MAX_MANAGED_RG_PER_MOBILE
+-#define MAX_MEAS_OBJ 64
+-#define MAX_MEAS_CONFIG 64
+-#define MAX_MEAS_ID 64
++#define NR_MAX_MEAS_OBJ 64
++#define NR_MAX_MEAS_CONFIG 64
++#define NR_MAX_MEAS_ID 64
+ #define MAX_QUANTITY_CONFIG 2
+ #define NUMBER_OF_NEIGHBORING_CELLS_MAX 1
+ 
+@@ -187,11 +187,11 @@ typedef struct l3_measurements_s {
+ } l3_measurements_t;
+ 
+ typedef struct rrcPerNB {
+-  NR_MeasObjectToAddMod_t *MeasObj[MAX_MEAS_OBJ];
+-  NR_ReportConfigToAddMod_t *ReportConfig[MAX_MEAS_CONFIG];
++  NR_MeasObjectToAddMod_t *MeasObj[NR_MAX_MEAS_OBJ];
++  NR_ReportConfigToAddMod_t *ReportConfig[NR_MAX_MEAS_CONFIG];
+   NR_QuantityConfigNR_t *QuantityConfig[MAX_QUANTITY_CONFIG];
+-  NR_MeasIdToAddMod_t *MeasId[MAX_MEAS_ID];
+-  NR_VarMeasReport_t *MeasReport[MAX_MEAS_ID];
++  NR_MeasIdToAddMod_t *MeasId[NR_MAX_MEAS_ID];
++  NR_VarMeasReport_t *MeasReport[NR_MAX_MEAS_ID];
+   NR_MeasGapConfig_t *measGapConfig;
+   NR_UE_RRC_SI_INFO SInfo;
+   NR_RSRP_Range_t s_measure;
+-- 
+2.48.1
+

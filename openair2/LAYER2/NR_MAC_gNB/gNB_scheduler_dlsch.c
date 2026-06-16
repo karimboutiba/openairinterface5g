@@ -1049,10 +1049,11 @@ void post_process_dlsch(gNB_MAC_INST *nr_mac, post_process_pdsch_t *pdsch, NR_UE
   UE->mac_stats.dl.rounds[harq->round]++;
   int tpc = nr_mac_get_tpc(&sched_ctrl->pucch_pc);
   LOG_D(NR_MAC,
-        "%4d.%2d [DLSCH/PDSCH/PUCCH] RNTI %04x DCI L %d start %3d RBs %3d startSymbol %2d nb_symbol %2d dmrspos %x MCS %2d nrOfLayers %d TBS %4d HARQ PID %2d round %d RV %d NDI %d dl_data_to_ULACK %d (%d.%d) PUCCH allocation %d TPC %d\n",
+        "%4d.%2d [DLSCH/PDSCH/PUCCH] RNTI %04x beam %d DCI L %d start %3d RBs %3d startSymbol %2d nb_symbol %2d dmrspos %x MCS %2d nrOfLayers %d TBS %4d HARQ PID %2d round %d RV %d NDI %d dl_data_to_ULACK %d (%d.%d) PUCCH allocation %d TPC %d\n",
         frame,
         slot,
         rnti,
+        UE->UE_beam_index,
         sched_ctrl->aggregation_level,
         sched_pdsch->rbStart,
         sched_pdsch->rbSize,
@@ -1200,10 +1201,11 @@ void post_process_dlsch(gNB_MAC_INST *nr_mac, post_process_pdsch_t *pdsch, NR_UE
      * from RLC or encode MAC CEs. The TX_req structure is filled below
      * or copy data to FAPI structures */
     LOG_D(NR_MAC,
-          "%d.%2d DL retransmission RNTI %04x HARQ PID %d round %d NDI %d\n",
+          "%d.%2d DL retransmission RNTI %04x beam %d HARQ PID %d round %d NDI %d\n",
           frame,
           slot,
           rnti,
+          UE->UE_beam_index,
           current_harq_pid,
           harq->round,
           harq->ndi);
@@ -1387,6 +1389,33 @@ void nr_schedule_ue_spec(module_id_t module_id,
   nfapi_nr_dl_tti_request_body_t *dl_req = &DL_req->dl_tti_request_body;
   post_process_pdsch_t pdsch = { frame, slot, dl_req, TX_req };
 
+  static frame_t last_frame = -1;
+  static int slots_total = 0;
+  static int slots_scheduled = 0;
+  static int report_frame = -1;
+  if ((int)frame != last_frame) {
+    if (last_frame >= 0 && frame % 100 == 0) {
+      LOG_I(NR_MAC,
+            "Frames %d-%d: DL slot usage %.1f%% (%d/%d slots scheduled)\n",
+            report_frame,
+            last_frame,
+            slots_total > 0 ? 100.0 * slots_scheduled / slots_total : 0.0,
+            slots_scheduled,
+            slots_total);
+      slots_total = 0;
+      slots_scheduled = 0;
+      report_frame = frame;
+    }
+    if (report_frame < 0)
+      report_frame = frame;
+    last_frame = frame;
+  }
+  slots_total++;
+  uint16_t nPDUs_before = dl_req->nPDUs;
+
   /* PREPROCESSOR */
   gNB_mac->pre_processor_dl(gNB_mac, &pdsch);
+
+  if (dl_req->nPDUs > nPDUs_before)
+    slots_scheduled++;
 }
