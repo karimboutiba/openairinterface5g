@@ -833,6 +833,66 @@ NR_MeasConfig_t *nr_rrc_get_measconfig(const gNB_RRC_INST *rrc, uint64_t nr_cell
 
     free(neigh_a3_id);
 
+    /* hack: add measurement for fr2 cell */
+    NR_MeasObjectToAddMod_t *mo = calloc_or_fail(1, sizeof(*mo));
+    mo->measObjectId = 40;
+    mo->measObject.present = NR_MeasObjectToAddMod__measObject_PR_measObjectNR;
+    NR_MeasObjectNR_t *monr = calloc_or_fail(1, sizeof(*monr));
+    asn1cCallocOne(monr->ssbFrequency, 2080027);
+    asn1cCallocOne(monr->ssbSubcarrierSpacing, NR_SubcarrierSpacing_kHz120);
+    monr->referenceSignalConfig.ssb_ConfigMobility = calloc_or_fail(1, sizeof(*monr->referenceSignalConfig.ssb_ConfigMobility));
+    monr->referenceSignalConfig.ssb_ConfigMobility->deriveSSB_IndexFromCell = false;
+    monr->absThreshSS_BlocksConsolidation = calloc_or_fail(1, sizeof(*monr->absThreshSS_BlocksConsolidation));
+    asn1cCallocOne(monr->absThreshSS_BlocksConsolidation->thresholdRSRP, 36);
+    asn1cCallocOne(monr->nrofSS_BlocksToAverage, 8);
+    monr->smtc1 = calloc_or_fail(1, sizeof(*monr->smtc1));
+    monr->smtc1->periodicityAndOffset.present = NR_SSB_MTC__periodicityAndOffset_PR_sf20;
+    monr->smtc1->periodicityAndOffset.choice.sf20 = 0;
+    monr->smtc1->duration = NR_SSB_MTC__duration_sf1;
+    monr->quantityConfigIndex = 1;
+    monr->ext1 = calloc_or_fail(1, sizeof(*monr->ext1));
+    asn1cCallocOne(monr->ext1->freqBandIndicatorNR, 261);
+    mo->measObject.choice.measObjectNR = monr;
+    asn1cSeqAdd(&result->measObjectToAddModList->list, mo);
+
+    NR_ReportConfigToAddMod_t *rc = calloc(1, sizeof(*rc));
+    asn1cSeqAdd(&result->reportConfigToAddModList->list, rc);
+    rc->reportConfigId = 40;
+    rc->reportConfig.present = NR_ReportConfigToAddMod__reportConfig_PR_reportConfigNR;
+    NR_EventTriggerConfig_t *etrc = calloc(1, sizeof(*etrc));
+    etrc->eventId.present = NR_EventTriggerConfig__eventId_PR_eventA4;
+    etrc->eventId.choice.eventA4 = calloc(1, sizeof(*etrc->eventId.choice.eventA4));
+    etrc->eventId.choice.eventA4->a4_Threshold.present = NR_MeasTriggerQuantity_PR_rsrp;
+    etrc->eventId.choice.eventA4->a4_Threshold.choice.rsrp = 20;
+    etrc->eventId.choice.eventA4->reportOnLeave = false;
+    etrc->eventId.choice.eventA4->hysteresis = 0;
+    etrc->eventId.choice.eventA4->timeToTrigger = NR_TimeToTrigger_ms40;
+    etrc->eventId.choice.eventA4->useAllowedCellList = false;
+    etrc->rsType = NR_NR_RS_Type_ssb;
+    etrc->reportInterval = NR_ReportInterval_ms120;
+    etrc->reportAmount = NR_EventTriggerConfig__reportAmount_infinity;
+    etrc->reportQuantityCell.rsrp = true;
+    etrc->reportQuantityCell.rsrq = true;
+    etrc->reportQuantityCell.sinr = true;
+    etrc->maxReportCells = 1;
+    etrc->reportQuantityRS_Indexes = calloc(1, sizeof(*etrc->reportQuantityRS_Indexes));
+    etrc->reportQuantityRS_Indexes->rsrp = true;
+    etrc->reportQuantityRS_Indexes->rsrq = true;
+    etrc->reportQuantityRS_Indexes->sinr= true;
+    etrc->maxNrofRS_IndexesToReport = calloc(1, sizeof(*etrc->maxNrofRS_IndexesToReport));
+    *etrc->maxNrofRS_IndexesToReport = 32;
+    etrc->includeBeamMeasurements = true;
+    NR_ReportConfigNR_t *rcnr = calloc(1, sizeof(*rcnr));
+    rcnr->reportType.present = NR_ReportConfigNR__reportType_PR_eventTriggered;
+    rcnr->reportType.choice.eventTriggered = etrc;
+    rc->reportConfig.choice.reportConfigNR = rcnr;
+
+    NR_MeasIdToAddMod_t *measid = calloc_or_fail(1, sizeof(NR_MeasIdToAddMod_t));
+    measid->measId = 40;
+    measid->reportConfigId = 40;
+    measid->measObjectId = 40;
+    asn1cSeqAdd(&result->measIdToAddModList->list, measid);
+
     return result;
   }
   return NULL;
@@ -1709,6 +1769,72 @@ static void process_Event_Based_Measurement_Report(gNB_RRC_INST *rrc,
   int best_rsrp = -10000;
 
   switch (event_triggered->eventId.present) {
+    case NR_EventTriggerConfig__eventId_PR_eventA4: {
+      xer_fprint(stdout, &asn_DEF_NR_MeasurementReport, measurementReport);
+      float rsrp = -99999;
+      float rsrq = -99999;
+      float sinr = -99999;
+      if (measurementReport
+          && measurementReport->criticalExtensions.present == NR_MeasurementReport__criticalExtensions_PR_measurementReport
+          && measurementReport->criticalExtensions.choice.measurementReport
+          && measurementReport->criticalExtensions.choice.measurementReport->measResults.measId == 40
+          && measurementReport->criticalExtensions.choice.measurementReport->measResults.measResultNeighCells
+          && measurementReport->criticalExtensions.choice.measurementReport->measResults.measResultNeighCells->present == NR_MeasResults__measResultNeighCells_PR_measResultListNR
+          && measurementReport->criticalExtensions.choice.measurementReport->measResults.measResultNeighCells->choice.measResultListNR) {
+        NR_MeasResultListNR_t *meas = measurementReport->criticalExtensions.choice.measurementReport->measResults.measResultNeighCells->choice.measResultListNR;
+        /* print cell results */
+        for (int i = 0; i < meas->list.count; i++) {
+          NR_MeasResultNR_t *m = meas->list.array[i];
+          if (!m) continue;
+          if (!m->measResult.cellResults.resultsSSB_Cell) continue;
+          int physical_cell_id = -1;
+          if (m->physCellId) physical_cell_id = *m->physCellId;
+          NR_MeasQuantityResults_t *r = m->measResult.cellResults.resultsSSB_Cell;
+          if (r->rsrp) {
+            rsrp = (*r->rsrp) - 126 - 31;                /* 38.133 10.1.6 */
+          }
+          if (r->rsrq) {
+            rsrq = ((*r->rsrq) - 1) / 2. - 63 + 20;      /* 38.133 10.1.11 */
+          }
+          if (r->sinr) {
+            sinr = ((*r->sinr) - 1) / 2. - 63 + 40;      /* 38.133 10.1.16 */
+          }
+          LOG_I(NR_RRC, "Event A4 (fr2 cell) physical_cell__id %d rsrp %g rsqr %g sinr %g\n",
+                physical_cell_id, rsrp, rsrq, sinr);
+        }
+        /* print ssb index results */
+        for (int i = 0; i < meas->list.count; i++) {
+          NR_MeasResultNR_t *m = meas->list.array[i];
+          if (!m) continue;
+          if (!m->measResult.rsIndexResults) continue;
+          if (!m->measResult.rsIndexResults->resultsSSB_Indexes) continue;
+          int physical_cell_id = -1;
+          if (m->physCellId) physical_cell_id = *m->physCellId;
+          NR_ResultsPerSSB_IndexList_t *r = m->measResult.rsIndexResults->resultsSSB_Indexes;
+          for (int i = 0; i < r->list.count; i++) {
+            int ssb_index = r->list.array[i]->ssb_Index;
+            NR_MeasQuantityResults_t *res = r->list.array[i]->ssb_Results;
+            if (!res) continue;
+            float rsrp = -9999;
+            float rsrq = -9999;
+            float sinr = -9999;
+            if (res->rsrp) {
+              rsrp = (*res->rsrp) - 126 - 31;                /* 38.133 10.1.6 */
+            }
+            if (res->rsrq) {
+              rsrq = ((*res->rsrq) - 1) / 2. - 63 + 20;      /* 38.133 10.1.11 */
+            }
+            if (res->sinr) {
+              sinr = ((*res->sinr) - 1) / 2. - 63 + 40;      /* 38.133 10.1.16 */
+            }
+            LOG_I(NR_RRC, "Event A4 (fr2 cell) physical_cell__id %d ssb_index %d rsrp %g rsqr %g sinr %g\n",
+                  physical_cell_id, ssb_index, rsrp, rsrq, sinr);
+          }
+        }
+      }
+      break;
+    }
+
     case NR_EventTriggerConfig__eventId_PR_eventA2:
       LOG_I(NR_RRC, "HO LOG: Event A2 (Serving becomes worse than threshold)\n");
       break;
