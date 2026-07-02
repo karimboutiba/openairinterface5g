@@ -284,7 +284,7 @@ int nr_ul_proportional_fair(const nr_ul_sched_params_t *params, nr_ul_candidate_
    * iteratively the RBs as needed*/
   uint16_t rbs_ue[MAX_MOBILES_PER_GNB] = {0};
   int excess_total_rbs = max_rbSize;
-  for (int j = 0, n = 0; j < n_active && n_remain_ue + 2; j++) {
+  for (int j = 0, n = 0; j < n_active && n < n_remain_ue + 2; j++) {
     nr_ul_candidate_t *cand = order[j];
     if (cand->is_retx || cand->sched_inactive)
       continue;
