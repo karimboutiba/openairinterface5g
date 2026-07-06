@@ -1363,6 +1363,13 @@ static void set_SR_periodandoffset(NR_SchedulingRequestResourceConfig_t *schedul
 
   schedulingRequestResourceConfig->periodicityAndOffset = calloc(1,sizeof(*schedulingRequestResourceConfig->periodicityAndOffset));
 
+  // Experimental: for more than 64 UEs, use 320 slots periodicity to avoid PUCCH collisions
+#if MAX_MOBILES_PER_GNB >= 64
+  schedulingRequestResourceConfig->periodicityAndOffset->present = NR_SchedulingRequestResourceConfig__periodicityAndOffset_PR_sl320;
+  schedulingRequestResourceConfig->periodicityAndOffset->choice.sl320 = sr_slot;
+  return;
+#else
+
   if(sr_slot < 10 && scs < NR_SubcarrierSpacing_kHz60){
     schedulingRequestResourceConfig->periodicityAndOffset->present = NR_SchedulingRequestResourceConfig__periodicityAndOffset_PR_sl10;
     schedulingRequestResourceConfig->periodicityAndOffset->choice.sl10 = sr_slot;
@@ -1397,6 +1404,7 @@ static void set_SR_periodandoffset(NR_SchedulingRequestResourceConfig_t *schedul
     schedulingRequestResourceConfig->periodicityAndOffset->present = NR_SchedulingRequestResourceConfig__periodicityAndOffset_PR_sl640;
     schedulingRequestResourceConfig->periodicityAndOffset->choice.sl640 = sr_slot;
   }
+#endif
 }
 
 static void scheduling_request_config(NR_PUCCH_Config_t *pucch_Config, int scs)
