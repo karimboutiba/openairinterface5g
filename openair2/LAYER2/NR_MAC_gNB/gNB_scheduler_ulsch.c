@@ -2027,7 +2027,15 @@ static int nr_ul_schedule(gNB_MAC_INST *nrmac,
                                               sched_frame,
                                               sched_slot);
     }
-
+    LOG_D(NR_MAC,
+          "%4d.%2d UL RNTI %04x beam %d: rbSize used %d, remaining RBs %d, remaining UEs %d\n",
+          sched_frame,
+          sched_slot,
+          UE->rnti,
+          beam_idx,
+          rbSize_used,
+          n_rb_sched[beam_idx] - rbSize_used,
+          remainUEs[beam_idx] - 1);
 
     n_rb_sched[beam_idx] -= rbSize_used;
     remainUEs[beam_idx]--;

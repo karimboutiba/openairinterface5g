@@ -1365,8 +1365,8 @@ static void set_SR_periodandoffset(NR_SchedulingRequestResourceConfig_t *schedul
 
   // Experimental: for more than 64 UEs, use 320 slots periodicity to avoid PUCCH collisions
 #if MAX_MOBILES_PER_GNB >= 64
-  schedulingRequestResourceConfig->periodicityAndOffset->present = NR_SchedulingRequestResourceConfig__periodicityAndOffset_PR_sl320;
-  schedulingRequestResourceConfig->periodicityAndOffset->choice.sl320 = sr_slot;
+  schedulingRequestResourceConfig->periodicityAndOffset->present = NR_SchedulingRequestResourceConfig__periodicityAndOffset_PR_sl10;
+  schedulingRequestResourceConfig->periodicityAndOffset->choice.sl10 = sr_slot;
   return;
 #else
 
