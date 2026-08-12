@@ -478,6 +478,55 @@ static bool is_tdd_ul_guard_slot(const struct xran_frame_config *frame_conf, int
   return is_tdd_ul_symbol(frame_conf, slot, XRAN_NUM_OF_SYMBOL_PER_SLOT - 1);
 }
 
+/** @brief Get the beam ID to signal in the C-plane of a slot for a given antenna.
+ *
+ * L1 only marks the OFDM symbols that are actually occupied by a scheduled PDU
+ * (e.g. only the PRACH symbols in a slot carrying nothing but PRACH); the
+ * remaining symbols are left unset. The analog beam, though, is a property of
+ * the whole slot (the MAC keeps a beam for at least one slot), so take the
+ * first beam ID configured in this slot and apply it to all its symbols.
+ * Otherwise, the C-plane would ask the RU to switch beam in the middle of the
+ * slot.
+ *
+ * If nothing is scheduled in this slot at all, keep the beam of the last
+ * scheduled slot rather than signalling a default, to avoid pointless beam
+ * switching on the RU. The last beam is remembered per antenna; as the analog
+ * beam is common to DL and UL, both directions share it.
+ *
+ * @param ru pointer to structure keeping pointers to OAI data
+ * @param frame_conf xran frame configuration
+ * @param slot the current (absolute) slot (number)
+ * @param ant_id antenna index
+ * @param dir XRAN_DIR_DL or XRAN_DIR_UL: only symbols of that direction are considered */
+static uint16_t get_slot_beam_id(const ru_info_t *ru,
+                                 const struct xran_frame_config *frame_conf,
+                                 int slot,
+                                 int ant_id,
+                                 uint8_t dir)
+{
+  /* beam of the last scheduled slot, one entry per antenna; only accessed from
+   * the RU TX thread through xran_fh_tx_send_slot() */
+  static uint16_t last_beam_id[XRAN_MAX_ANTENNA_NR] = {0};
+  DevAssert(ant_id < XRAN_MAX_ANTENNA_NR);
+
+  for (int sym_idx = 0; sym_idx < XRAN_NUM_OF_SYMBOL_PER_SLOT; sym_idx++) {
+    /* in FDD, all symbols of the slot belong to the given direction */
+    if (frame_conf->nFrameDuplexType != XRAN_FDD) {
+      bool is_sym_of_dir = (dir == XRAN_DIR_UL) ? is_tdd_ul_symbol(frame_conf, slot, sym_idx)
+                                                : is_tdd_dl_symbol(frame_conf, slot, sym_idx);
+      if (!is_sym_of_dir)
+        continue;
+    }
+    uint16_t beam_id = ru->beam_id[slot * XRAN_NUM_OF_SYMBOL_PER_SLOT + sym_idx][ant_id];
+    if (beam_id != 0) {
+      last_beam_id[ant_id] = beam_id;
+      return last_beam_id[ant_id];
+    }
+  }
+  /* slot not scheduled: stay on the beam of the previous scheduled slot */
+  return last_beam_id[ant_id];
+}
+
 /** @details Read PUSCH data from xran buffers.
  * If I/Q compression (bitwidth < 16 bits) is configured, decompresses the data
  * before writing.
@@ -669,6 +718,8 @@ int xran_fh_tx_send_slot(ru_info_t *ru, int frame, int slot, uint64_t timestamp)
       if (frame_conf->nFrameDuplexType != XRAN_FDD && !is_tdd_ul_guard_slot(frame_conf, slot)) {
         continue;
       }
+      /* the analog beam cannot be switched within a slot, see get_slot_beam_id() */
+      const uint16_t beam_id = get_slot_beam_id(ru, frame_conf, slot, ant_id, XRAN_DIR_UL);
       // This loop would better be more inner to avoid confusion and maybe also errors.
       for (int32_t sym_idx = 0; sym_idx < XRAN_NUM_OF_SYMBOL_PER_SLOT; sym_idx++) {
         /* skip DL and guard symbols. */
@@ -692,7 +743,7 @@ int xran_fh_tx_send_slot(ru_info_t *ru, int frame, int slot, uint64_t timestamp)
               && (sym_idx < pRbElm->nStartSymb || sym_idx >= pRbElm->nStartSymb + pRbElm->numSymb))
             continue;
 
-          pRbElm->nBeamIndex = ru->beam_id[slot * XRAN_NUM_OF_SYMBOL_PER_SLOT + sym_idx][ant_id];
+          pRbElm->nBeamIndex = beam_id;
         }
       }
     }
@@ -725,6 +776,8 @@ int xran_fh_tx_send_slot(ru_info_t *ru, int frame, int slot, uint64_t timestamp)
           pRbMap->nPrbElm = XRAN_NUM_OF_SYMBOL_PER_SLOT;
       }
 
+      /* the analog beam cannot be switched within a slot, see get_slot_beam_id() */
+      const uint16_t beam_id = get_slot_beam_id(ru, frame_conf, slot, ant_id, XRAN_DIR_DL);
       // This loop would better be more inner to avoid confusion and maybe also errors.
       for (int32_t sym_idx = 0; sym_idx < XRAN_NUM_OF_SYMBOL_PER_SLOT; sym_idx++) {
         /* skip UL and guard symbols. */
@@ -777,7 +830,7 @@ int xran_fh_tx_send_slot(ru_info_t *ru, int frame, int slot, uint64_t timestamp)
                   continue;
               }
             }
-            p_prbMapElm->nBeamIndex = ru->beam_id[slot * XRAN_NUM_OF_SYMBOL_PER_SLOT + sym_idx][ant_id];
+            p_prbMapElm->nBeamIndex = beam_id;
 
             dst = xran_add_hdr_offset(dst, p_prbMapElm->compMethod);
 
