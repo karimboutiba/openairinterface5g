@@ -151,12 +151,14 @@ void nr_feptx_prec(RU_t *ru, int frame_tx, int slot_tx)
   NR_DL_FRAME_PARMS *fp = ru->nr_frame_parms;
   start_meas(&ru->precoding_stats);
 
-  // Copy beam ID assigned to all ports in this slot
+  // Copy beam ID assigned to all ports in this slot: TX and RX ports, as the
+  // beams of the UL slots are needed as well (e.g. for the UL C-plane in 7.2)
   if (gNB->common_vars.analog_bf) {
+    const int nb_ant = max(ru->nb_tx, ru->nb_rx);
     for (int i = 0; i < fp->symbols_per_slot; i++) {
       memcpy(ru->common.beam_id[slot_tx * fp->symbols_per_slot + i],
              gNB->common_vars.beam_id[slot_tx * fp->symbols_per_slot + i],
-             (ru->nb_tx) * sizeof(**ru->common.beam_id));
+             nb_ant * sizeof(**ru->common.beam_id));
     }
   }
 
@@ -230,10 +232,11 @@ void nr_feptx_tp(RU_t *ru, int frame_tx, int slot)
 
   // Copy beam IDs
   if (ru->gNB_list[0]->common_vars.analog_bf) {
+    const int nb_ant = max(ru->nb_tx, ru->nb_rx);
     for (uint_fast16_t i = 0; i < fp->symbols_per_slot; i++)
       memcpy(ru->common.beam_id[slot * fp->symbols_per_slot + i],
              ru->gNB_list[0]->common_vars.beam_id[slot * fp->symbols_per_slot + i],
-             (ru->nb_tx) * sizeof(**ru->common.beam_id));
+             nb_ant * sizeof(**ru->common.beam_id));
   }
 
   int nbfeptx = 0;

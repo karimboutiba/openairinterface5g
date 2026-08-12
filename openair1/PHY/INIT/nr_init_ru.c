@@ -22,9 +22,11 @@ void nr_phy_init_RU(RU_t *ru)
   int nb_rx_streams = ru->nb_rx;
   LOG_I(NR_PHY, "nb_tx_streams %d, nb_rx_streams %d\n", nb_tx_streams, nb_rx_streams);
   const unsigned int num_symbols = fp->symbols_per_slot * fp->slots_per_frame;
+  /* beam_id array is common for tx and rx so the max number of both is taken */
+  const unsigned int num_beam_streams = max(nb_tx_streams, nb_rx_streams);
   ru->common.beam_id = malloc16_clear(num_symbols * sizeof(*ru->common.beam_id));
   for (int i = 0; i < num_symbols; i++) {
-    ru->common.beam_id[i] = malloc16_clear(nb_tx_streams * sizeof(**ru->common.beam_id));
+    ru->common.beam_id[i] = malloc16_clear(num_beam_streams * sizeof(**ru->common.beam_id));
   }
 
   if ((nb_tx_streams > fp->nb_antennas_tx) || (nb_rx_streams > fp->nb_antennas_rx))
