@@ -681,15 +681,15 @@ int xran_fh_tx_send_slot(ru_info_t *ru, int frame, int slot, uint64_t timestamp)
 
         LOG_D(HW, "pPrbMap->nPrbElm %d\n", pPrbMap->nPrbElm);
         for (uint32_t idxElm = 0; idxElm < pPrbMap->nPrbElm; idxElm++) {
-          struct xran_section_desc *p_sec_desc = NULL;
           struct xran_prb_elm *pRbElm = &pPrbMap->prbMap[idxElm];
-          int numRB, startRB;
-          numRB = pRbElm->UP_nRBSize;
-          startRB = pRbElm->UP_nRBStart;
-          p_sec_desc = &pRbElm->sec_desc[sym_idx];
-          LOG_D(HW, "pPrbMap[%d] : PRBstart %d nPRBs %d\n", idxElm, startRB, numRB);
-          // For Liteon FR2 with RunSlotPrbMapBySymbolEnable xran_prb_map will have xran_prb_elm prbMap[14], each idxElm matches to sym_idx.
-          if (fh_cfg->RunSlotPrbMapBySymbolEnable && (sym_idx < pRbElm->nStartSymb || sym_idx >= pRbElm->nStartSymb + pRbElm->numSymb) && !p_sec_desc->pCtrl)
+          LOG_D(HW, "pPrbMap[%d] : PRBstart %d nPRBs %d\n", idxElm, pRbElm->UP_nRBStart, pRbElm->UP_nRBSize);
+          /* With RunSlotPrbMapBySymbolEnable, one prbMap element carries one
+           * symbol (one C-plane section), so only the element this symbol
+           * belongs to must be updated. Note that the element index does not
+           * necessarily match the symbol index: in a mixed slot, the elements
+           * start at the first UL symbol, hence the check on nStartSymb. */
+          if (fh_cfg->RunSlotPrbMapBySymbolEnable
+              && (sym_idx < pRbElm->nStartSymb || sym_idx >= pRbElm->nStartSymb + pRbElm->numSymb))
             continue;
 
           pRbElm->nBeamIndex = ru->beam_id[slot * XRAN_NUM_OF_SYMBOL_PER_SLOT + sym_idx][ant_id];
