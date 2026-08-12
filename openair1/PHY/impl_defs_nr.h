@@ -26,6 +26,24 @@
   #define PHY_DBG_DEV_TST_PRINTF(...)
 #endif
 
+/* The per-symbol beam ID arrays (gNB->common_vars.beam_id, ru->common.beam_id)
+ * store the beam index as received over FAPI, i.e. including the "beam index
+ * present" bit (bit 15). A symbol with no scheduled PDU keeps the value 0,
+ * which is therefore distinguishable from a real beam ID 0. Users of these
+ * arrays must check nr_beam_id_is_set() before taking nr_beam_id_value(). */
+#define NR_BEAM_ID_PRESENT                 (0x8000)
+
+static inline bool nr_beam_id_is_set(uint16_t beam_id)
+{
+  return (beam_id & NR_BEAM_ID_PRESENT) != 0;
+}
+
+/** @brief Get the beam ID to be sent to the RU out of a FAPI beam index. */
+static inline uint16_t nr_beam_id_value(uint16_t beam_id)
+{
+  return beam_id & ~NR_BEAM_ID_PRESENT;
+}
+
 /* to set for UE capabilities */
 #define MAX_NR_OF_SRS_RESOURCE_SET         (1)
 #define MAX_NR_OF_SRS_RESOURCES_PER_SET    (1)

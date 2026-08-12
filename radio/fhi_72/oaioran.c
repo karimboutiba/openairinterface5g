@@ -518,8 +518,8 @@ static uint16_t get_slot_beam_id(const ru_info_t *ru,
         continue;
     }
     uint16_t beam_id = ru->beam_id[slot * XRAN_NUM_OF_SYMBOL_PER_SLOT + sym_idx][ant_id];
-    if (beam_id != 0) {
-      last_beam_id[ant_id] = beam_id;
+    if (nr_beam_id_is_set(beam_id)) {
+      last_beam_id[ant_id] = nr_beam_id_value(beam_id);
       return last_beam_id[ant_id];
     }
   }

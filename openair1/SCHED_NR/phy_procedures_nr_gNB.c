@@ -59,12 +59,14 @@ void beam_index_allocation(uint16_t fapi_beam_index,
     return;
 
   AssertFatal(IS_BIT_SET(fapi_beam_index, 15), "Can't handle preconfigured DBM yet\n");
-  uint16_t ru_beam_idx = fapi_beam_index & 0x7fff;
+  /* store the FAPI beam index as is, i.e. with the "beam index present" bit
+   * (bit 15) set: this is what tells a scheduled symbol from an unscheduled
+   * one (value 0), which a real beam ID 0 could not */
   for (int j = 0; j < symbols_per_slot; j++) {
     if (((bitmap_symbols >> j) & 0x01))
       for (uint_fast8_t p = 0; p < num_ports; p++) {
         DevAssert(ant + p < num_ant_max);
-        ant_beam_id_list[slot * symbols_per_slot + j][ant + p] = ru_beam_idx;
+        ant_beam_id_list[slot * symbols_per_slot + j][ant + p] = fapi_beam_index;
       }
   }
 }

@@ -262,10 +262,11 @@ static radio_tx_gpio_flag_t get_gpio_flags(RU_t *ru, int slot)
         int prev_slot = (slot - 1 + fp->slots_per_frame) % fp->slots_per_frame;
         uint16_t **beam_ids = ru->common.beam_id;
         uint16_t prev_beam = beam_ids[prev_slot * fp->symbols_per_slot][0];
-        int beam = beam_ids[slot * fp->symbols_per_slot][0];
-        if (prev_beam != beam) {
-          flags_gpio = beam | TX_GPIO_CHANGE; // enable change of gpio
-          LOG_I(HW, "slot %d, beam %d\n", slot, beam_ids[slot * fp->symbols_per_slot][0]);
+        uint16_t beam = beam_ids[slot * fp->symbols_per_slot][0];
+        // nothing scheduled in this slot: stay on the beam currently programmed
+        if (nr_beam_id_is_set(beam) && prev_beam != beam) {
+          flags_gpio = nr_beam_id_value(beam) | TX_GPIO_CHANGE; // enable change of gpio
+          LOG_I(HW, "slot %d, beam %d\n", slot, nr_beam_id_value(beam));
         }
       }
       break;
@@ -274,7 +275,8 @@ static radio_tx_gpio_flag_t get_gpio_flags(RU_t *ru, int slot)
       // the beam index is written in bits 8-10 of the flags
       // bit 11 enables the gpio programming
       int beam = 0;
-      if ((slot % 10 == 0) && ru->common.beam_id && (ru->common.beam_id[slot * fp->symbols_per_slot][0] < 64)) {
+      if ((slot % 10 == 0) && ru->common.beam_id && nr_beam_id_is_set(ru->common.beam_id[slot * fp->symbols_per_slot][0])
+          && (nr_beam_id_value(ru->common.beam_id[slot * fp->symbols_per_slot][0]) < 64)) {
         // beam = ru->common.beam_id[0][slot*fp->symbols_per_slot] | 64;
         beam = 1024; // hardcoded now for beam32 boresight
         // beam = 127; //for the sake of trying beam63
