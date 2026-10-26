@@ -5066,35 +5066,33 @@ uint16_t nr_get_csi_bitlen(nr_csi_report_t *csi_report)
   return csi_bitlen;
 }
 
-bool supported_bw_comparison(int bw_mhz, NR_SupportedBandwidth_t *supported_BW, long *support_90mhz)
+static int max_supported_bw_mhz(const NR_SupportedBandwidth_t *supported_BW)
 {
-  if (bw_mhz == 90)
-    return support_90mhz ? true : false;
   switch (supported_BW->present) {
     case NR_SupportedBandwidth_PR_fr1 :
       switch (supported_BW->choice.fr1) {
         case NR_SupportedBandwidth__fr1_mhz5 :
-          return bw_mhz == 5;
+          return 5;
         case NR_SupportedBandwidth__fr1_mhz10 :
-          return bw_mhz == 10;
+          return 10;
         case NR_SupportedBandwidth__fr1_mhz15 :
-          return bw_mhz == 15;
+          return 15;
         case NR_SupportedBandwidth__fr1_mhz20 :
-          return bw_mhz == 20;
+          return 20;
         case NR_SupportedBandwidth__fr1_mhz25 :
-          return bw_mhz == 25;
+          return 25;
         case NR_SupportedBandwidth__fr1_mhz30 :
-          return bw_mhz == 30;
+          return 30;
         case NR_SupportedBandwidth__fr1_mhz40 :
-          return bw_mhz == 40;
+          return 40;
         case NR_SupportedBandwidth__fr1_mhz50 :
-          return bw_mhz == 50;
+          return 50;
         case NR_SupportedBandwidth__fr1_mhz60 :
-          return bw_mhz == 60;
+          return 60;
         case NR_SupportedBandwidth__fr1_mhz80 :
-          return bw_mhz == 80;
+          return 80;
         case NR_SupportedBandwidth__fr1_mhz100 :
-          return bw_mhz == 100;
+          return 100;
         default :
           AssertFatal(false, "Invalid FR1 supported band\n");
       }
@@ -5102,13 +5100,13 @@ bool supported_bw_comparison(int bw_mhz, NR_SupportedBandwidth_t *supported_BW, 
     case NR_SupportedBandwidth_PR_fr2 :
       switch (supported_BW->choice.fr2) {
         case NR_SupportedBandwidth__fr2_mhz50 :
-          return bw_mhz == 50;
+          return 50;
         case NR_SupportedBandwidth__fr2_mhz100 :
-          return bw_mhz == 100;
+          return 100;
         case NR_SupportedBandwidth__fr2_mhz200 :
-          return bw_mhz == 200;
+          return 200;
         case NR_SupportedBandwidth__fr2_mhz400 :
-          return bw_mhz == 400;
+          return 400;
         default :
           AssertFatal(false, "Invalid FR2 supported band\n");
       }
@@ -5116,7 +5114,17 @@ bool supported_bw_comparison(int bw_mhz, NR_SupportedBandwidth_t *supported_BW, 
     default :
       AssertFatal(false, "Invalid BW type\n");
   }
-  return false;
+  return 0;
+}
+
+bool supported_bw_comparison(int bw_mhz, NR_SupportedBandwidth_t *supported_BW, long *support_90mhz)
+{
+  // 90 MHz has its own capability bit, it is not implied by a wider supportedBandwidth
+  if (bw_mhz == 90 && !support_90mhz)
+    return false;
+  // TS 38.306: supportedBandwidth is the max channel BW per CC, so narrower channels are
+  // covered as well, including those with no enumerator of their own (35, 45, 70 MHz)
+  return bw_mhz <= max_supported_bw_mhz(supported_BW);
 }
 
 uint32_t compute_PDU_length(uint32_t num_TLV, uint32_t total_length)
