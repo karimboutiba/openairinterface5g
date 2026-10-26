@@ -35,6 +35,14 @@ void lte_dump_mac_stats(eNB_MAC_INST *mac, FILE *fd);
 extern RAN_CONTEXT_t RC;
 extern rb_id_t mbms_rab_id;
 
+/* DL HARQ outcome per DL subframe (all UEs), dumped in MAC_stats.log: locates TDD-specific failures */
+typedef struct {
+  uint32_t tx;       // first transmissions
+  uint32_t mcs_sum;  // sum of their MCS
+  uint32_t ack, nack, dtx;
+} dl_sf_stats_t;
+extern dl_sf_stats_t dl_sf_stats[10];
+
 static const uint32_t BSR_TABLE[BSR_TABLE_SIZE] = {0,     10,    12,    14,    17,    19,    22,    26,    31,    36,    42,    49,    57,     67,     78,     91,
                                                    105,   125,   146,   171,   200,   234,   274,   321,   376,   440,   515,   603,   706,    826,    967,    1132,
                                                    1326,  1552,  1817,  2127,  2490,  2915,  3413,  3995,  4677,  5467,  6411,  7505,  8787,   10287,  12043,  14099,

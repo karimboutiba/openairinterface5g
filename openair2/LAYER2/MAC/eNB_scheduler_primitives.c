@@ -34,6 +34,9 @@ extern uint16_t frame_cnt;
 #include "common/ran_context.h"
 #include "SCHED/sched_common.h"
 #include "openair2/LAYER2/MAC/mac_extern.h"
+
+dl_sf_stats_t dl_sf_stats[10];
+
 /*
  * If the CQI is low, then scheduler will use a higher aggregation level and lower aggregation level otherwise
  * this is also dependent to transmission mode, where an offset could be defined
@@ -3914,6 +3917,16 @@ extract_harq(module_id_t mod_idP,
                                                  frame_tx,
                                                  subframe_tx);
           RA_t *ra = &eNB->common_channels[CC_idP].ra[0];
+
+          if (num_ack_nak == 1 && sched_ctl->round[CC_idP][harq_pid] < 8) {
+            int v = harq_indication_tdd->harq_data[0].bundling.value_0; // 1 ACK, 2 NACK, 4 DTX
+            if (v == 1)
+              dl_sf_stats[subframe_tx].ack++;
+            else if (v == 2)
+              dl_sf_stats[subframe_tx].nack++;
+            else
+              dl_sf_stats[subframe_tx].dtx++;
+          }
 
           if(num_ack_nak == 1) {
             if (harq_indication_tdd->harq_data[0].bundling.value_0 == 1) { //ack

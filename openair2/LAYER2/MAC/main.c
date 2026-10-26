@@ -82,6 +82,14 @@ void lte_dump_mac_stats(eNB_MAC_INST *mac, FILE *fd)
               UE_info->eNB_UE_stats[CC_id][UE_id].dlsch_errors);
     }
   }
+  fprintf(fd, "DL per subframe (first tx, avg MCS, HARQ ack/nack/dtx):\n");
+  for (int sf = 0; sf < 10; sf++) {
+    const dl_sf_stats_t *s = &dl_sf_stats[sf];
+    if (s->tx || s->ack || s->nack)
+      fprintf(fd, "  sf%d: tx %u, mcs %.1f, ack %u nack %u dtx %u (%.1f%% not acked)\n", sf, s->tx,
+              s->tx ? (double)s->mcs_sum / s->tx : 0.0, s->ack, s->nack, s->dtx,
+              s->ack + s->nack + s->dtx ? 100.0 * (s->nack + s->dtx) / (s->ack + s->nack + s->dtx) : 0.0);
+  }
   fflush(fd);
   return;
 }

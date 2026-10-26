@@ -1196,7 +1196,8 @@ rrc_eNB_generate_RRCConnectionReestablishment(
         LOG_D(RRC, PROTOCOL_RRC_CTXT_UE_FMT" RRC_eNB --- MAC_CONFIG_REQ  (SRB1) ---> MAC_eNB\n",
               PROTOCOL_RRC_CTXT_UE_ARGS(ctxt_pP));
 
-        const rrc_mac_config_req_eNB_t tmp = {.CC_id = ue_context->primaryCC_id,
+        const rrc_mac_config_req_eNB_t tmp = {.rnti = rnti,
+                                              .CC_id = ue_context->primaryCC_id,
                                               .physicalConfigDedicated = ue_context->physicalConfigDedicated,
                                               .mac_MainConfig = ue_context->mac_MainConfig,
                                               .logicalChannelIdentity = 1,
@@ -1289,6 +1290,9 @@ rrc_eNB_process_RRCConnectionReestablishmentComplete(
       }
     }
   }
+
+  if (SRB2_config == NULL)
+    SRB2_config = ue_context_pP->ue_context.saved_SRB2_config;
 
   SRB_configList2 = &(ue_context_pP->ue_context.SRB_configList2[next_xid]);
   DRB_configList2 = &(ue_context_pP->ue_context.DRB_configList2[next_xid]);
@@ -1756,6 +1760,7 @@ rrc_eNB_process_RRCConnectionReestablishmentComplete(
   }
 
   LOG_I(RRC, "[RRCConnectionReestablishment]put UE %x into freeList\n", reestablish_rnti);
+  pdcp_save_drb_state_for_reestablishment(ctxt_pP->module_id, reestablish_rnti, ctxt_pP->rntiMaybeUEid);
   put_UE_in_freelist(ctxt_pP->module_id, reestablish_rnti, 0);
 }
 
@@ -2108,13 +2113,29 @@ rrc_eNB_generate_dedicatedRRCConnectionReconfiguration(const protocol_ctxt_t *co
                                         );
   LOG_DUMPMSG(RRC,DEBUG_RRC,(char *)buffer,size,"[MSG] RRC Connection Reconfiguration\n");
 
-  /* Free all NAS PDUs */
-  for (i = 0; i < ue_context_pP->ue_context.nb_of_e_rabs; i++) {
+  /* Free all NAS PDUs (new E-RABs can sit beyond nb_of_e_rabs, so scan every set-up slot) */
+  for (i = 0; i < ue_context_pP->ue_context.setup_e_rabs; i++) {
     if (ue_context_pP->ue_context.e_rab[i].param.nas_pdu.buffer != NULL) {
       /* Free the NAS PDU buffer and invalidate it */
       free(ue_context_pP->ue_context.e_rab[i].param.nas_pdu.buffer);
       ue_context_pP->ue_context.e_rab[i].param.nas_pdu.buffer = NULL;
     }
+  }
+
+  if (size <= 0) {
+    /* Encoding failed (e.g. no DRB to add): sending it would pass size -1 to PDCP and abort */
+    LOG_E(RRC, "[eNB %d] UE %x: dedicated RRCConnectionReconfiguration encoding failed (%d), not sent\n",
+          ctxt_pP->module_id, ue_context_pP->ue_context.rnti, size);
+    /* the E-RABs marked DONE above got no DRB */
+    for (i = 0; i < ue_context_pP->ue_context.setup_e_rabs; i++)
+      if (ue_context_pP->ue_context.e_rab[i].status == E_RAB_STATUS_DONE && ue_context_pP->ue_context.e_rab[i].xid == xid)
+        ue_context_pP->ue_context.e_rab[i].status = E_RAB_STATUS_FAILED;
+    /* an Initial Context Setup waiting for these DRBs must still be answered */
+    if (ue_context_pP->ue_context.ics_resp_pending) {
+      ue_context_pP->ue_context.ics_resp_pending = false;
+      rrc_eNB_send_S1AP_INITIAL_CONTEXT_SETUP_RESP(ctxt_pP, ue_context_pP);
+    }
+    return;
   }
 
   LOG_I(RRC,
@@ -3098,7 +3119,10 @@ void rrc_eNB_generate_defaultRRCConnectionReconfiguration(const protocol_ctxt_t 
       //      ue_context_pP->ue_context.e_rab[i].param.sgw_addr;
       //      ue_context_pP->ue_context.e_rab[i].param.gtp_teid;
     }
-    /* TODO should test if e RAB are OK before! */
+    /* Only the first E-RAB gets a DRB here (DRB 1 below); the others stay NEW and are
+     * set up by a dedicated reconfiguration once this one completes */
+    if (i > 0)
+      continue;
     ue_context_pP->ue_context.e_rab[i].status = E_RAB_STATUS_DONE;
     LOG_D(RRC, "setting the status for the default DRB (index %d) to (%d,%s)\n",
           i, ue_context_pP->ue_context.e_rab[i].status, "E_RAB_STATUS_DONE");
@@ -5844,7 +5868,11 @@ rrc_eNB_decode_ccch(
                 LOG_I(RRC, " S-TMSI exists, ue_context_p %p, old rnti %x => %lx\n", ue_context_p, ue_context_p->ue_context.rnti, ctxt_pP->rntiMaybeUEid);
 
                 LOG_I(PHY, "remove RNTI %04x\n", ue_context_p->ue_context.rnti);
-                rrc_mac_remove_ue(ctxt_pP->module_id, ue_context_p->ue_context.rnti);
+                /* Release the old RNTI like a normal UE release (PHY DLSCH/ULSCH/UCI, MAC, RLC, PDCP),
+                 * but keep the RRC context (removeFlag false) since it is reused for the new RNTI.
+                 * Removing it from the MAC only leaked one PHY DLSCH slot per reconnection; after
+                 * NUMBER_OF_DLSCH_MAX of them no new UE could get Msg4 ("illegal UE_id ... -1"). */
+                put_UE_in_freelist(ctxt_pP->module_id, ue_context_p->ue_context.rnti, false);
 
                 stmsi_received=1;
                 /* replace rnti in the context */
@@ -6427,7 +6455,10 @@ rrc_eNB_decode_dcch(
             //    rrc_eNB_send_S1AP_E_RAB_SETUP_RESP(ctxt_pP,
             //               ue_context_p,
             //               ul_dcch_msg->message.choice.c1.choice.rrcConnectionReconfigurationComplete.rrc_TransactionIdentifier);
-            if (ue_context_p->ue_context.nb_of_modify_e_rabs > 0) {
+            if (ue_context_p->ue_context.ics_resp_pending) {
+              ue_context_p->ue_context.ics_resp_pending = false;
+              rrc_eNB_send_S1AP_INITIAL_CONTEXT_SETUP_RESP(ctxt_pP, ue_context_p);
+            } else if (ue_context_p->ue_context.nb_of_modify_e_rabs > 0) {
               rrc_eNB_send_S1AP_E_RAB_MODIFY_RESP(ctxt_pP,
                                                   ue_context_p,
                                                   ul_dcch_msg->message.choice.c1.choice.rrcConnectionReconfigurationComplete.rrc_TransactionIdentifier);
@@ -6466,8 +6497,17 @@ rrc_eNB_decode_dcch(
             }
           } else if(dedicated_DRB == 0) {
             if(ue_context_p->ue_context.reestablishment_cause == LTE_ReestablishmentCause_spare1) {
-              rrc_eNB_send_S1AP_INITIAL_CONTEXT_SETUP_RESP(ctxt_pP,
-                  ue_context_p);
+              bool more_e_rabs = false;
+              for (int e = 0; e < ue_context_p->ue_context.nb_of_e_rabs; e++)
+                more_e_rabs |= ue_context_p->ue_context.e_rab[e].status == E_RAB_STATUS_NEW;
+              if (more_e_rabs) {
+                /* the default reconfiguration only carries DRB 1: add the other E-RABs' DRBs, answer the MME after */
+                ue_context_p->ue_context.ics_resp_pending = true;
+                rrc_eNB_generate_dedicatedRRCConnectionReconfiguration(ctxt_pP, ue_context_p, 0);
+              } else {
+                rrc_eNB_send_S1AP_INITIAL_CONTEXT_SETUP_RESP(ctxt_pP,
+                    ue_context_p);
+              }
             } else {
               ue_context_p->ue_context.reestablishment_cause = LTE_ReestablishmentCause_spare1;
 

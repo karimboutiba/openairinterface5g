@@ -532,28 +532,38 @@ rrc_eNB_send_S1AP_INITIAL_CONTEXT_SETUP_RESP(
   msg_p = itti_alloc_new_message (TASK_RRC_ENB, 0, S1AP_INITIAL_CONTEXT_SETUP_RESP);
   S1AP_INITIAL_CONTEXT_SETUP_RESP (msg_p).eNB_ue_s1ap_id = ue_context_pP->ue_context.eNB_ue_s1ap_id;
 
+  bool established = false;
+
+  /* Fill one response for all E-RABs and send it once: sending it per E-RAB queued the same
+   * message several times, so S1AP read it again after freeing it (crash with 2+ E-RABs). */
   for (e_rab = 0; e_rab < ue_context_pP->ue_context.nb_of_e_rabs; e_rab++) {
    if (ue_context_pP->ue_context.e_rab[e_rab].status == E_RAB_STATUS_DONE || ue_context_pP->ue_context.e_rab[e_rab].status == E_RAB_STATUS_TOMODIFY) {
-      e_rabs_done++;
-      S1AP_INITIAL_CONTEXT_SETUP_RESP (msg_p).e_rabs[e_rab].e_rab_id = ue_context_pP->ue_context.e_rab[e_rab].param.e_rab_id;
+      int i = e_rabs_done++;
+      S1AP_INITIAL_CONTEXT_SETUP_RESP (msg_p).e_rabs[i].e_rab_id = ue_context_pP->ue_context.e_rab[e_rab].param.e_rab_id;
       // TODO add other information from S1-U when it will be integrated
-      S1AP_INITIAL_CONTEXT_SETUP_RESP (msg_p).e_rabs[e_rab].gtp_teid = ue_context_pP->ue_context.enb_gtp_teid[e_rab];
-      S1AP_INITIAL_CONTEXT_SETUP_RESP (msg_p).e_rabs[e_rab].eNB_addr = ue_context_pP->ue_context.enb_gtp_addrs[e_rab];
-      S1AP_INITIAL_CONTEXT_SETUP_RESP (msg_p).e_rabs[e_rab].eNB_addr.length = 4;
+      S1AP_INITIAL_CONTEXT_SETUP_RESP (msg_p).e_rabs[i].gtp_teid = ue_context_pP->ue_context.enb_gtp_teid[e_rab];
+      S1AP_INITIAL_CONTEXT_SETUP_RESP (msg_p).e_rabs[i].eNB_addr = ue_context_pP->ue_context.enb_gtp_addrs[e_rab];
+      S1AP_INITIAL_CONTEXT_SETUP_RESP (msg_p).e_rabs[i].eNB_addr.length = 4;
       if (ue_context_pP->ue_context.e_rab[e_rab].status == E_RAB_STATUS_DONE) {
         ue_context_pP->ue_context.e_rab[e_rab].status = E_RAB_STATUS_ESTABLISHED;
-        S1AP_INITIAL_CONTEXT_SETUP_RESP (msg_p).nb_of_e_rabs = e_rabs_done;
-        S1AP_INITIAL_CONTEXT_SETUP_RESP (msg_p).nb_of_e_rabs_failed = e_rabs_failed;
-        itti_send_msg_to_task (TASK_S1AP, ctxt_pP->instance, msg_p);
+        established = true;
       }
 
     } else {
-      e_rabs_failed++;
+      int i = e_rabs_failed++;
       ue_context_pP->ue_context.e_rab[e_rab].status = E_RAB_STATUS_FAILED;
-      S1AP_INITIAL_CONTEXT_SETUP_RESP (msg_p).e_rabs_failed[e_rab].e_rab_id = ue_context_pP->ue_context.e_rab[e_rab].param.e_rab_id;
+      S1AP_INITIAL_CONTEXT_SETUP_RESP (msg_p).e_rabs_failed[i].e_rab_id = ue_context_pP->ue_context.e_rab[e_rab].param.e_rab_id;
       // TODO add cause when it will be integrated
     }
   }
+
+  S1AP_INITIAL_CONTEXT_SETUP_RESP (msg_p).nb_of_e_rabs = e_rabs_done;
+  S1AP_INITIAL_CONTEXT_SETUP_RESP (msg_p).nb_of_e_rabs_failed = e_rabs_failed;
+
+  if (established)
+    itti_send_msg_to_task (TASK_S1AP, ctxt_pP->instance, msg_p);
+  else
+    itti_free (TASK_RRC_ENB, msg_p);
 }
 
 //------------------------------------------------------------------------------
@@ -879,6 +889,8 @@ int rrc_eNB_process_S1AP_INITIAL_CONTEXT_SETUP_REQ(MessageDef *msg_p, const char
       int i;
       memset(&create_tunnel_req, 0, sizeof(create_tunnel_req));
       ue_context_p->ue_context.nb_of_e_rabs = S1AP_INITIAL_CONTEXT_SETUP_REQ (msg_p).nb_of_e_rabs;
+      ue_context_p->ue_context.setup_e_rabs = ue_context_p->ue_context.nb_of_e_rabs;
+      ue_context_p->ue_context.ics_resp_pending = false;
 
       for (i = 0; i < ue_context_p->ue_context.nb_of_e_rabs; i++) {
         ue_context_p->ue_context.e_rab[i].status = E_RAB_STATUS_NEW;
@@ -1192,7 +1204,7 @@ int rrc_eNB_process_S1AP_E_RAB_SETUP_REQ(MessageDef *msg_p, const char *msg_name
         LOG_I(RRC,"E_RAB setup REQ: local index %d teid %u, eps id %d \n",
               i,
               create_tunnel_req.sgw_S1u_teid[e_rab_done],
-              create_tunnel_req.eps_bearer_id[i] );
+              create_tunnel_req.eps_bearer_id[e_rab_done] );
         inde_list[e_rab_done] = i;
         e_rab_done++;
 
@@ -1224,6 +1236,10 @@ int rrc_eNB_process_S1AP_E_RAB_SETUP_REQ(MessageDef *msg_p, const char *msg_name
         &create_tunnel_resp,
         &inde_list[0]);
       ue_context_p->ue_context.setup_e_rabs+=nb_e_rabs_tosetup;
+      /* New E-RABs can land in any free slot of e_rab[] (e.g. after a reused context), and
+       * the dedicated reconfiguration only scans slots below setup_e_rabs: cover them all. */
+      if (e_rab_done > 0 && ue_context_p->ue_context.setup_e_rabs < inde_list[e_rab_done - 1] + 1)
+        ue_context_p->ue_context.setup_e_rabs = inde_list[e_rab_done - 1] + 1;
     }
     /* TODO parameters yet to process ... */
     {
